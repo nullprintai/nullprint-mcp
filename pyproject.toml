@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "nullprint-mcp"
-version = "0.1.0"
+version = "0.1.1"
 description = "MCP server for Nullprint, the multi-profile browser: create, launch, check and drive browser profiles from any MCP-capable AI agent."
 readme = "README.md"
 license = "MIT"
@@ -34,4 +34,4 @@ nullprint-mcp = "nullprint_mcp.__main__:main"
 packages = ["nullprint_mcp"]
 
 [tool.hatch.build.targets.sdist]
-include = ["nullprint_mcp/**", "tests/**", "README.md", "LICENSE", "pyproject.toml"]
+include = ["nullprint_mcp/**", "tests/**", "README.md", "LICENSE", "pyproject.toml", "server.json"]

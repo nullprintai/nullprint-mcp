@@ -1,0 +1,12 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.nullprintai/nullprint-mcp",
+  "title": "Nullprint",
+  "description": "Create, launch, check and drive Nullprint multi-profile browser profiles from any MCP agent.",
+  "websiteUrl": "https://nullprint.ai/docs/mcp/",
+  "repository": { "url": "https://github.com/nullprintai/nullprint-mcp", "source": "github" },
+  "version": "0.1.1",
+  "packages": [
+    { "registryType": "pypi", "identifier": "nullprint-mcp", "version": "0.1.1", "transport": { "type": "stdio" } }
+  ]
+}
