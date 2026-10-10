@@ -1,0 +1,29 @@
+{
+  "name": "nullprint-mcp",
+  "version": "0.1.2",
+  "mcpName": "io.github.nullprintai/nullprint-mcp",
+  "description": "MCP server for Nullprint, the multi-profile browser: create, launch, check and drive browser profiles from any MCP-capable AI agent. Node build, no Python needed.",
+  "license": "MIT",
+  "author": "Nullprint <support@nullprint.ai> (https://nullprint.ai)",
+  "homepage": "https://nullprint.ai/docs/mcp/",
+  "repository": { "type": "git", "url": "https://github.com/nullprintai/nullprint-mcp" },
+  "bugs": { "url": "https://github.com/nullprintai/nullprint-mcp/issues" },
+  "keywords": ["mcp", "model-context-protocol", "browser", "fingerprint", "nullprint", "automation", "antidetect"],
+  "type": "module",
+  "bin": { "nullprint-mcp": "dist/index.js" },
+  "files": ["dist/index.js", "README.md", "LICENSE"],
+  "engines": { "node": ">=18" },
+  "scripts": {
+    "build": "esbuild src/index.ts --bundle --platform=node --target=node18 --format=esm --outfile=dist/index.js --banner:js=\"#!/usr/bin/env node\" && chmod +x dist/index.js",
+    "typecheck": "tsc --noEmit",
+    "test": "npm run build && node --test test/*.test.js",
+    "prepublishOnly": "npm run typecheck && npm test"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "@types/node": "^22.0.0",
+    "esbuild": "^0.28.2",
+    "typescript": "^5.9.0",
+    "zod": "^4.0.0"
+  }
+}
