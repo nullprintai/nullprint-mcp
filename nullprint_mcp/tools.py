@@ -124,7 +124,8 @@ def profile_stop(name: str) -> dict:
 
 def profile_create(name: str, engine: str | None = None, proxy: str | None = None,
                    group: str | None = None, tags: list[str] | None = None,
-                   note: str | None = None, urls: list[str] | None = None) -> dict:
+                   note: str | None = None, urls: list[str] | None = None,
+                   force_dark: bool | None = None) -> dict:
     """Create a new identity. Its fingerprint is generated and frozen on the spot.
 
     You do not choose the fingerprint — the point of the product is that every
@@ -147,6 +148,12 @@ def profile_create(name: str, engine: str | None = None, proxy: str | None = Non
             this identity is bound to. Free text, searchable in the app, and
             returned under `meta` by profiles_list.
         urls: startup tabs — pages opened automatically when the identity starts.
+        force_dark: personal display preference, OFF by default. True inverts
+            web pages that have no dark theme of their own (Google Ads and the
+            like) to dark; sites may notice the changed colors, so use it only
+            on identities the user manages for themselves, never on accounts
+            being built up. Leave unset to keep pages exactly as the sites
+            render them. Chrome-engine identities only.
 
     Returns {name, os, created}. Fails with a readable message if the name is
     taken (409), if the quota is reached or the installation is unauthorized
@@ -155,9 +162,36 @@ def profile_create(name: str, engine: str | None = None, proxy: str | None = Non
     clean = _identity_name(name)
     body = {"name": clean, "engine": engine, "proxy": proxy,
             "group": group, "tags": tags, "note": note, "urls": urls}
+    if force_dark is not None:
+        body["launch"] = {"forceDark": bool(force_dark)}
     return daemon.request(
         "POST", "/profiles", json={k: v for k, v in body.items() if v is not None}
     ).json()
+
+
+def profile_settings(name: str, force_dark: bool | None = None) -> dict:
+    """Change a display setting of an existing identity. Only the settings you
+    pass are changed; everything else in its launch settings stays as it is.
+
+    Args:
+        name: identity name, exactly as profiles_list reports it.
+        force_dark: True = force dark web pages (inverts sites that have no dark
+            theme; the identity's color scheme then reads as dark too). False =
+            off, pages render exactly as the sites intend (the default). Sites
+            may notice forced dark colors — reserve it for identities the user
+            manages for themselves. Chrome-engine identities only. Takes effect
+            the next time the identity starts.
+
+    Returns {name, launch} with the launch settings now stored.
+    """
+    clean = _identity_name(name)
+    if force_dark is None:
+        raise ValueError("nothing to change: pass force_dark")
+    current = daemon.request("GET", f"/profiles/{clean}").json()
+    launch = dict((current.get("meta") or {}).get("launch") or {})
+    launch["forceDark"] = bool(force_dark)
+    daemon.request("PATCH", f"/profiles/{clean}", json={"launch": launch})
+    return {"name": clean, "launch": launch}
 
 
 def profile_checkup(name: str, live: bool = False) -> dict:
@@ -450,7 +484,7 @@ def session_switch_tab(name: str, index: int) -> dict:
 
 
 TOOLS = (profiles_list, profile_start, profile_stop,
-         profile_create, profile_checkup, proxy_check,
+         profile_create, profile_settings, profile_checkup, proxy_check,
          profile_delete, trash_list, profile_restore,
          session_goto, session_snapshot, session_click_selector,
          session_fill_selector, session_press, session_eval,

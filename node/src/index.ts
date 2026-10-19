@@ -6,7 +6,7 @@ import { DEFAULT_HOST, setDaemonUrl } from "./daemon.js";
 import { TOOLS } from "./tools.js";
 
 export const SERVER_NAME = "nullprint";
-export const VERSION = "0.1.2";
+export const VERSION = "0.1.3";
 
 export const INSTRUCTIONS = `Nullprint runs browser identities: each one is a separate browser
 profile with its own frozen fingerprint, its own exit IP, and its own cookies, so

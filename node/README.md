@@ -2,7 +2,7 @@
 
 An [MCP](https://modelcontextprotocol.io) server for [Nullprint](https://nullprint.ai), the multi-profile browser. It lets any MCP-capable AI agent (Claude Code, Claude Desktop, Cursor, Windsurf, Cline, OpenAI Codex, Kimi, …) create browser profiles, launch them, run consistency check-ups and drive the pages inside a running profile.
 
-This is the Node.js build: a single bundled file with no runtime dependencies, so `npx nullprint-mcp` works wherever Node 18+ is present, with no Python or uv on the machine. The Python build on PyPI (`uvx nullprint-mcp`) exposes the same 17 tools with the same names, arguments and behaviour; pick whichever runtime your client already has.
+This is the Node.js build: a single bundled file with no runtime dependencies, so `npx nullprint-mcp` works wherever Node 18+ is present, with no Python or uv on the machine. The Python build on PyPI (`uvx nullprint-mcp`) exposes the same 18 tools with the same names, arguments and behaviour; pick whichever runtime your client already has.
 
 The server is a thin layer over the local Nullprint daemon's HTTP API: every tool maps to one daemon endpoint. The daemon, the browser kernels and the fingerprint engine ship with the Nullprint desktop app and are not part of this package.
 
@@ -51,6 +51,7 @@ If the daemon is not running the tools say so plainly instead of throwing a conn
 | `profile_start` | Open a browser session for a profile; returns the driving endpoints |
 | `profile_stop` | Stop that profile's browser (session or app-launched window) |
 | `profile_create` | Create a profile (fingerprint generated and frozen), optionally with proxy, ledger and start pages |
+| `profile_settings` | Change a display setting of an existing profile — today `force_dark` (force dark web pages, off by default; merged into its launch settings) | `GET` + `PATCH /profiles/{name}` |
 | `profile_checkup` | Consistency check-up, returns `{summary, checks}` |
 | `proxy_check` | Stateless proxy test: exit IP, country, latency |
 | `profile_delete` | Soft delete to the recycle bin (recoverable); refused while running |

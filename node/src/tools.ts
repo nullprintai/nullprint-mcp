@@ -111,12 +111,34 @@ Returns {name, os, created}. Fails with a readable message if the name is taken 
       tags: z.array(z.string()).optional().describe("local ledger tags"),
       note: z.string().optional().describe("local ledger note, free text"),
       urls: z.array(z.string()).optional().describe("startup tabs — pages opened automatically when the identity starts"),
+      force_dark: z.boolean().optional().describe("personal display preference, OFF by default. true inverts web pages that have no dark theme of their own (Google Ads and the like) to dark; sites may notice the changed colors, so use it only on identities the user manages for themselves, never on accounts being built up. Leave unset to keep pages exactly as the sites render them. Chrome-engine identities only."),
     },
     handler: (a) => {
       const clean = identityName(a.name);
       const body: Record<string, unknown> = { name: clean, engine: a.engine, proxy: a.proxy, group: a.group, tags: a.tags, note: a.note, urls: a.urls };
       for (const k of Object.keys(body)) if (body[k] == null) delete body[k];
+      if (a.force_dark != null) body.launch = { forceDark: Boolean(a.force_dark) };
       return request("POST", "/profiles", { json: body });
+    },
+  },
+  {
+    name: "profile_settings",
+    description: `Change a display setting of an existing identity. Only the settings you pass are changed; everything else in its launch settings stays as it is.
+
+force_dark: true = force dark web pages (inverts sites that have no dark theme; the identity's color scheme then reads as dark too). false = off, pages render exactly as the sites intend (the default). Sites may notice forced dark colors — reserve it for identities the user manages for themselves. Chrome-engine identities only. Takes effect the next time the identity starts.
+
+Returns {name, launch} with the launch settings now stored.`,
+    shape: {
+      name: NAME,
+      force_dark: z.boolean().optional().describe("true = force dark web pages; false = off (default). Chrome-engine identities only."),
+    },
+    handler: async (a) => {
+      const clean = identityName(a.name);
+      if (a.force_dark == null) throw new Error("nothing to change: pass force_dark");
+      const current = (await request("GET", `/profiles/${clean}`)) as { meta?: { launch?: Record<string, unknown> } };
+      const launch = { ...((current.meta && current.meta.launch) || {}), forceDark: Boolean(a.force_dark) };
+      await request("PATCH", `/profiles/${clean}`, { json: { launch } });
+      return { name: clean, launch };
     },
   },
   {

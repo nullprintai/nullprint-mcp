@@ -89,7 +89,7 @@ test("initialize + tools/list: server name nullprint, exactly the 17 tools, no p
   const tools = (await c.send("tools/list", {})).result.tools;
   assert.deepEqual(
     tools.map((t) => t.name),
-    ["profiles_list", "profile_start", "profile_stop", "profile_create", "profile_checkup", "proxy_check", "profile_delete", "trash_list", "profile_restore",
+    ["profiles_list", "profile_start", "profile_stop", "profile_create", "profile_settings", "profile_checkup", "proxy_check", "profile_delete", "trash_list", "profile_restore",
       "session_goto", "session_snapshot", "session_click_selector", "session_fill_selector", "session_press", "session_eval", "session_tabs", "session_switch_tab"],
   );
   for (const t of tools) assert.ok(t.inputSchema && t.inputSchema.type === "object", t.name);
@@ -200,4 +200,24 @@ test("--help goes to stderr, stdout stays empty; bad args exit 2", async () => {
   const both = await run(["--port", "1", "--daemon-url", "http://x"]);
   assert.equal(both.code, 2);
   assert.match(both.err, /not both/);
+});
+
+test("profile_create takes force_dark as launch.forceDark; profile_settings merges it into the existing launch settings", async () => {
+  const { srv, port, seen } = await fakeDaemon({
+    "POST /profiles": (s) => [201, { name: s.body.name, os: "macos", created: "2026-10-19" }],
+    "GET /profiles/shop-1": [200, { name: "shop-1", engine: "chromium", meta: { launch: { colorScheme: "light", blockImages: true } } }],
+    "PATCH /profiles/shop-1": [200, { ok: true }],
+  });
+  const c = new Client(["--port", String(port)]);
+  await c.init();
+  await c.call("profile_create", { name: "dark-1", force_dark: true });
+  assert.deepEqual(seen.at(-1).body, { name: "dark-1", launch: { forceDark: true } });
+  await c.call("profile_create", { name: "plain-1" });
+  assert.deepEqual(seen.at(-1).body, { name: "plain-1" });
+  const out = JSON.parse((await c.call("profile_settings", { name: "shop-1", force_dark: true })).result.content[0].text);
+  assert.deepEqual(seen.slice(-2).map((s) => [s.method, s.path]), [["GET", "/profiles/shop-1"], ["PATCH", "/profiles/shop-1"]]);
+  assert.deepEqual(seen.at(-1).body, { launch: { colorScheme: "light", blockImages: true, forceDark: true } });
+  assert.equal(out.launch.forceDark, true);
+  c.close();
+  srv.close();
 });

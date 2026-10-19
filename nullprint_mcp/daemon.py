@@ -67,7 +67,7 @@ def base_url() -> str:
 
     path = runtime_dir() / "daemon.json"
     try:
-        info = json.loads(path.read_text())
+        info = json.loads(path.read_text(encoding="utf-8"))
     except OSError:
         raise DaemonError(
             f"the Nullprint daemon does not look like it is running: no {path}. "
@@ -91,7 +91,7 @@ def api_key() -> str | None:
     if env:
         return env
     try:
-        return json.loads((runtime_dir() / "daemon.json").read_text()).get("api_key")
+        return json.loads((runtime_dir() / "daemon.json").read_text(encoding="utf-8")).get("api_key")
     except (OSError, ValueError):
         return None
 

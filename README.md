@@ -53,6 +53,7 @@ If the daemon is not running the tools say so plainly instead of throwing a conn
 | `profile_start` | Open a browser session for a profile; returns the driving endpoints | `POST /sessions/{name}` |
 | `profile_stop` | Stop that profile's browser (session or app-launched window) | `DELETE /sessions/{name}` → falls back to `POST /profiles/{name}/stop` |
 | `profile_create` | Create a profile (fingerprint generated and frozen), optionally with proxy, ledger and start pages | `POST /profiles` |
+| `profile_settings` | Change a display setting of an existing profile — today `force_dark` (force dark web pages, off by default; merged into its launch settings) | `GET` + `PATCH /profiles/{name}` |
 | `profile_checkup` | Consistency check-up, returns `{summary, checks}` | `GET /profiles/{name}/checkup?live=` |
 | `proxy_check` | Stateless proxy test: exit IP, country, latency | `POST /proxy-check` |
 | `profile_delete` | Soft delete to the recycle bin (recoverable); refused while running | `DELETE /profiles/{name}` |
@@ -113,4 +114,4 @@ Claude Desktop、Kimi 等走配置文件的客户端，在 `mcpServers` 里加 `
 
 不用配端口和密钥：服务自动读桌面应用写在 `~/.nullprint/daemon.json` 里的端口和 API Key。要连别的机器上的 daemon，传 `--daemon-url` 并设 `NULLPRINT_API_KEY`。
 
-**17 个工具**：`profiles_list`、`profile_start`、`profile_stop`、`profile_create`、`profile_checkup`、`proxy_check`、`profile_delete`、`trash_list`、`profile_restore`，以及 8 个会话工具 `session_goto / snapshot / click_selector / fill_selector / press / eval / tabs / switch_tab`（先 `profile_start` 再用）。彻底删除身份故意不做成工具：清空回收站只能在桌面应用里由人操作。
+**18 个工具**：`profiles_list`、`profile_start`、`profile_stop`、`profile_create`、`profile_settings`、`profile_checkup`、`proxy_check`、`profile_delete`、`trash_list`、`profile_restore`，以及 8 个会话工具 `session_goto / snapshot / click_selector / fill_selector / press / eval / tabs / switch_tab`（先 `profile_start` 再用）。彻底删除身份故意不做成工具：清空回收站只能在桌面应用里由人操作。

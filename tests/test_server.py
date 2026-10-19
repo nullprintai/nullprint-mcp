@@ -113,7 +113,7 @@ def _listed_tools():
 def test_server_exposes_every_tool_with_a_description():
     by_name = _listed_tools()
     assert set(by_name) == {"profiles_list", "profile_start", "profile_stop",
-                            "profile_create", "profile_checkup", "proxy_check",
+                            "profile_create", "profile_settings", "profile_checkup", "proxy_check",
                             "profile_delete", "trash_list", "profile_restore",
                             "session_goto", "session_snapshot", "session_click_selector",
                             "session_fill_selector", "session_press", "session_eval",
@@ -153,7 +153,7 @@ def test_tool_schemas_require_only_what_is_mandatory():
 
 def test_profile_create_schema_offers_the_ledger_and_startup_tabs():
     props = _listed_tools()["profile_create"].inputSchema["properties"]
-    assert set(props) == {"name", "engine", "proxy", "group", "tags", "note", "urls"}
+    assert set(props) == {"name", "engine", "proxy", "group", "tags", "note", "urls", "force_dark"}
 
 
 def test_live_checkup_warns_that_it_starts_a_browser():
