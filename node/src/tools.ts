@@ -5,15 +5,29 @@ import { DaemonError, request } from "./daemon.js";
 
 const CDP_KEYS = ["cdp_endpoint", "ws_endpoint", "cdp_url", "webSocketDebuggerUrl"] as const;
 const NO_CDP_NOTE =
-  "This identity's browser core does not publish a CDP endpoint — only the Chrome core does. " +
-  "Drive it through the daemon's /sessions/{name}/* commands instead (goto, snapshot, click, type, screenshot, ...).";
+  "No CDP endpoint for this identity. Nullprint keeps external debugging off by default: turn it on per identity in the app " +
+  "(Edit -> Advanced -> External debugging, needs a second verification), then reopen the identity. The Firefox core never publishes one. " +
+  "Without it, drive the browser through the daemon's /sessions/{name}/* commands (goto, snapshot, click, type, screenshot, ...).";
+
+// Same whitelist as the engine's own name check (engine/nullprint.py _check_name), plus % and #:
+// a name must stay ONE path segment. '%2F', '?' and '#' used to slip through and, once the daemon
+// decoded the URL, reach endpoints this server deliberately does not expose (security audit H-5, 2026-10-21).
+const NAME_BAD = new Set('/\\:*?"<>|%#');
+const WIN_RESERVED = new Set(["CON", "PRN", "AUX", "NUL", ...[1, 2, 3, 4, 5, 6, 7, 8, 9].flatMap((i) => [`COM${i}`, `LPT${i}`])]);
 
 /** Validate an identity name before it becomes a URL path segment. */
 export function identityName(name: unknown): string {
   if (typeof name !== "string" || !name.trim()) throw new Error("name is required: the identity's name, e.g. 'bing-us'");
   const clean = name.trim();
-  if (clean.includes("/") || clean === "." || clean === "..") {
-    throw new Error(`invalid identity name ${JSON.stringify(name)}: '/' and '.'/'..' are not allowed`);
+  if (
+    clean.startsWith(".") || clean.length > 120 ||
+    [...clean].some((c) => NAME_BAD.has(c) || c.charCodeAt(0) < 32) ||
+    WIN_RESERVED.has(clean.split(".")[0].toUpperCase())
+  ) {
+    throw new Error(
+      `invalid identity name ${JSON.stringify(name)}: it cannot start with '.', be longer than 120 characters, ` +
+        `or contain / \\ : * ? " < > | % # or control characters`,
+    );
   }
   return clean;
 }
@@ -50,7 +64,7 @@ Call this first to find the exact name to pass to profile_start / profile_stop; 
 
 The identity keeps its frozen fingerprint, its exit proxy, and its logged-in cookies — starting it does not re-randomize anything. Starting an identity that already has a session open is a no-op that returns the existing one.
 
-Returns the session record: name, opened_at, idle_seconds, url (the page it is on), plus cdp_endpoint — a ws:// DevTools address you can attach your own automation to. Only the Chrome browser core publishes one; on the Firefox core it is null and cdp_note says what to use instead.
+Returns the session record: name, opened_at, idle_seconds, url (the page it is on), plus cdp_endpoint — a ws:// DevTools address you can attach your own automation to. It is only published for Chrome-core identities that have external debugging turned on in the app (off by default; Edit -> Advanced -> External debugging, needs a second verification, then reopen the identity). Otherwise it is null, cdp_unavailable gives the daemon's reason code (external_debug_off, external_debug_not_granted, not_supported_for_engine, starting) and cdp_note says what to do — the session commands work either way.
 
 Prefer the daemon's own commands over attaching to cdp_endpoint. A session driven from outside bypasses Nullprint's consistency guards, so an outside tool can set a viewport, locale, timezone, or header that contradicts the identity's frozen fingerprint and make it detectable. Attach at your own risk, and change nothing the identity did not already claim.
 
@@ -61,11 +75,11 @@ Fails with a readable message if the identity does not exist (404), if too many 
     },
     handler: async (a) => {
       const clean = identityName(a.name);
-      const session = (await request("POST", `/sessions/${clean}`, { json: { headless: Boolean(a.headless) } })) as Record<string, unknown>;
+      const session = (await request("POST", `/sessions/${encodeURIComponent(clean)}`, { json: { headless: Boolean(a.headless) } })) as Record<string, unknown>;
       const out: Record<string, unknown> = { ...session };
       const cdp = CDP_KEYS.map((k) => session[k]).find((v) => v);
       out.cdp_endpoint = cdp ?? null;
-      if (!cdp) out.cdp_note = NO_CDP_NOTE;
+      if (!cdp) out.cdp_note = (typeof session.cdp_hint === "string" && session.cdp_hint) || NO_CDP_NOTE;   // BUG-024:daemon 说了原因就用它的
       return out;
     },
   },
@@ -84,14 +98,14 @@ Fails with a readable message if the identity does not exist, or if the daemon i
     handler: async (a) => {
       const clean = identityName(a.name);
       try {
-        await request("DELETE", `/sessions/${clean}`);
+        await request("DELETE", `/sessions/${encodeURIComponent(clean)}`);
         return { name: clean, stopped: true, closed: ["session"] };
       } catch (e) {
         // 409 "session not open" is the usual answer for an identity launched as a window; 404 allowed too.
         // Anything else (daemon down, 422, ...) is a real failure and must not be swallowed.
         if (!(e instanceof DaemonError) || (e.status !== 404 && e.status !== 409)) throw e;
       }
-      const result = (await request("POST", `/profiles/${clean}/stop`)) as Record<string, unknown>;
+      const result = (await request("POST", `/profiles/${encodeURIComponent(clean)}/stop`)) as Record<string, unknown>;
       const closed = (result.stopped as unknown[]) || [];
       return { name: clean, stopped: closed.length > 0, closed, status: result.status };
     },
@@ -135,9 +149,9 @@ Returns {name, launch} with the launch settings now stored.`,
     handler: async (a) => {
       const clean = identityName(a.name);
       if (a.force_dark == null) throw new Error("nothing to change: pass force_dark");
-      const current = (await request("GET", `/profiles/${clean}`)) as { meta?: { launch?: Record<string, unknown> } };
+      const current = (await request("GET", `/profiles/${encodeURIComponent(clean)}`)) as { meta?: { launch?: Record<string, unknown> } };
       const launch = { ...((current.meta && current.meta.launch) || {}), forceDark: Boolean(a.force_dark) };
-      await request("PATCH", `/profiles/${clean}`, { json: { launch } });
+      await request("PATCH", `/profiles/${encodeURIComponent(clean)}`, { json: { launch } });
       return { name: clean, launch };
     },
   },
@@ -152,7 +166,7 @@ Returns {name, engine, live, summary, checks}. \`summary\` is "pass", "warn", or
       name: NAME,
       live: z.boolean().optional().describe("false (default) derives everything from the stored record — fast, no side effects. true additionally STARTS THE BROWSER to measure the real TLS/JA3 fingerprint and User-Agent; takes tens of seconds and opens a window."),
     },
-    handler: (a) => request("GET", `/profiles/${identityName(a.name)}/checkup`, { params: { live: Boolean(a.live) } }),
+    handler: (a) => request("GET", `/profiles/${encodeURIComponent(identityName(a.name))}/checkup`, { params: { live: Boolean(a.live) } }),
   },
   {
     name: "proxy_check",
@@ -178,7 +192,7 @@ Fails with a readable message if the identity does not exist (404), or if it is 
     shape: { name: NAME },
     handler: async (a) => {
       const clean = identityName(a.name);
-      await request("DELETE", `/profiles/${clean}`);
+      await request("DELETE", `/profiles/${encodeURIComponent(clean)}`);
       return { name: clean, deleted: true, recoverable: true, note: "in the recycle bin; profile_restore brings it back" };
     },
   },
@@ -200,7 +214,7 @@ Its frozen fingerprint, proxy binding, cookies and login state all come back —
 
 Returns {name, engine, created}. Fails with a readable message if nothing by that name is in the recycle bin (404), or if a live identity has taken the name since (409) — rename or delete that one first, then restore.`,
     shape: { name: z.string().describe("the trashed identity's name") },
-    handler: (a) => request("POST", `/trash/${identityName(a.name)}/restore`),
+    handler: (a) => request("POST", `/trash/${encodeURIComponent(identityName(a.name))}/restore`),
   },
   {
     name: "session_goto",
@@ -211,7 +225,7 @@ Open the identity's session with profile_start first — this drives an already-
 Returns {url}: the page's URL after navigation. Fails with a readable message if the session is not open (409 — call profile_start first) or the identity does not exist (404).`,
     shape: { name: NAME, url: z.string().describe('the URL to navigate to, e.g. "https://example.com/login"') },
     handler: (a) =>
-      request("POST", `/sessions/${identityName(a.name)}/goto`, { json: { url: nonEmpty(a.url, "url is required: the page to navigate to, e.g. 'https://example.com'") } }),
+      request("POST", `/sessions/${encodeURIComponent(identityName(a.name))}/goto`, { json: { url: nonEmpty(a.url, "url is required: the page to navigate to, e.g. 'https://example.com'") } }),
   },
   {
     name: "session_snapshot",
@@ -221,7 +235,7 @@ This is the primary way to see what is on a page before acting on it — read it
 
 Returns {snapshot}: the page's accessibility tree as text. Fails with a readable message if the session is not open (409 — call profile_start first) or the identity does not exist (404).`,
     shape: { name: NAME },
-    handler: (a) => request("GET", `/sessions/${identityName(a.name)}/snapshot`),
+    handler: (a) => request("GET", `/sessions/${encodeURIComponent(identityName(a.name))}/snapshot`),
   },
   {
     name: "session_click_selector",
@@ -232,7 +246,7 @@ Requires a session opened with profile_start first. \`selector\` is a CSS select
 Returns {ok: true}. Fails with a readable message if the session is not open (409 — call profile_start first), the identity does not exist (404), or the selector never matches / the click times out (502).`,
     shape: { name: NAME, selector: z.string().describe("CSS selector for the element to click") },
     handler: (a) =>
-      request("POST", `/sessions/${identityName(a.name)}/click_selector`, {
+      request("POST", `/sessions/${encodeURIComponent(identityName(a.name))}/click_selector`, {
         json: { selector: nonEmpty(a.selector, "selector is required: a CSS selector, e.g. 'button#submit'") },
       }),
   },
@@ -249,7 +263,7 @@ Returns {ok: true}. Fails with a readable message if the session is not open (40
       text: z.string().describe("the text to put in the field, replacing whatever was there"),
     },
     handler: (a) =>
-      request("POST", `/sessions/${identityName(a.name)}/fill_selector`, {
+      request("POST", `/sessions/${encodeURIComponent(identityName(a.name))}/fill_selector`, {
         json: { selector: nonEmpty(a.selector, "selector is required: a CSS selector, e.g. 'input[name=email]'"), value: a.text },
       }),
   },
@@ -261,7 +275,7 @@ Requires a session opened with profile_start first. Use Playwright key names, e.
 
 Returns {ok: true}. Fails with a readable message if the session is not open (409 — call profile_start first) or the identity does not exist (404).`,
     shape: { name: NAME, key: z.string().describe("the key (or chord) to press") },
-    handler: (a) => request("POST", `/sessions/${identityName(a.name)}/press`, { json: { key: a.key } }),
+    handler: (a) => request("POST", `/sessions/${encodeURIComponent(identityName(a.name))}/press`, { json: { key: a.key } }),
   },
   {
     name: "session_eval",
@@ -272,7 +286,7 @@ Requires a session opened with profile_start first. A page-JS error is data to r
 Returns the {ok, result} envelope: {"ok": true, "result": <value>} on success. \`result\` is whatever the expression evaluates to as JSON — string, number, boolean, object, array, or null — not necessarily a string; do not assume its type. Fails with a readable message if the session is not open (409 — call profile_start first) or the identity does not exist (404).`,
     shape: { name: NAME, expr: z.string().describe('the JavaScript expression to evaluate in the page, e.g. "document.title"') },
     handler: (a) =>
-      request("POST", `/sessions/${identityName(a.name)}/eval`, { json: { expr: nonEmpty(a.expr, "expr is required: the JavaScript expression to evaluate") } }),
+      request("POST", `/sessions/${encodeURIComponent(identityName(a.name))}/eval`, { json: { expr: nonEmpty(a.expr, "expr is required: the JavaScript expression to evaluate") } }),
   },
   {
     name: "session_tabs",
@@ -282,7 +296,7 @@ Requires a session opened with profile_start first. Use this to find the index t
 
 Returns {tabs, active}: \`tabs\` is a list of {index, url}, \`active\` is the index of the tab currently in front. Fails with a readable message if the session is not open (409 — call profile_start first) or the identity does not exist (404).`,
     shape: { name: NAME },
-    handler: (a) => request("GET", `/sessions/${identityName(a.name)}/tabs`),
+    handler: (a) => request("GET", `/sessions/${encodeURIComponent(identityName(a.name))}/tabs`),
   },
   {
     name: "session_switch_tab",
@@ -292,6 +306,27 @@ Requires a session opened with profile_start first. Get \`index\` from session_t
 
 Returns {index, url} for the now-active tab. Fails with a readable message if the session is not open (409 — call profile_start first), the identity does not exist (404), or the index is out of range (422).`,
     shape: { name: NAME, index: z.number().int().describe("the tab's index, from session_tabs") },
-    handler: (a) => request("POST", `/sessions/${identityName(a.name)}/switch_tab`, { json: { index: a.index } }),
+    handler: (a) => request("POST", `/sessions/${encodeURIComponent(identityName(a.name))}/switch_tab`, { json: { index: a.index } }),
+  },
+  {
+    name: "session_dialog",
+    description: `Answer the JavaScript dialog (alert, confirm, prompt, beforeunload) open on the session's page.
+
+Dialogs are left open, as in a normal browser: while one is open the page is blocked and the other session_* tools fail with 409 "a JavaScript <type> is open on the page (<message>)". Call this to answer it, then retry. A beforeunload that your own session_goto (or click) causes is accepted automatically and never shows up here.
+
+Returns {ok, action, type, message} for the dialog that was answered. Fails with a readable message if no dialog is open (409), the session is not open (409 — call profile_start first) or the identity does not exist (404).`,
+    shape: {
+      name: NAME,
+      action: z.string().describe('"accept" (OK / Leave) or "dismiss" (Cancel / Stay)'),
+      prompt_text: z.string().optional().describe("for a prompt() dialog, the text to enter before accepting; omit it to accept the prompt's default value"),
+    },
+    handler: (a) => {
+      const clean = identityName(a.name);
+      const act = typeof a.action === "string" ? a.action.trim().toLowerCase() : a.action;
+      if (act !== "accept" && act !== "dismiss") throw new Error("action must be 'accept' or 'dismiss'");
+      const json: Record<string, unknown> = { action: act };
+      if (a.prompt_text !== undefined && a.prompt_text !== null) json.prompt_text = a.prompt_text;
+      return request("POST", `/sessions/${encodeURIComponent(clean)}/dialog`, { json });
+    },
   },
 ];

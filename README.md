@@ -67,15 +67,17 @@ If the daemon is not running the tools say so plainly instead of throwing a conn
 | `session_eval` | Run JavaScript on the page, returns `{ok, result}` | `POST /sessions/{name}/eval` |
 | `session_tabs` | List the session's tabs and the active one | `GET /sessions/{name}/tabs` |
 | `session_switch_tab` | Bring a tab to the front | `POST /sessions/{name}/switch_tab` |
+| `session_dialog` | Answer the JavaScript dialog (alert / confirm / prompt / beforeunload) open on the page: `accept` or `dismiss` | `POST /sessions/{name}/dialog` |
 
 Notes that matter when writing prompts:
 
 - **`session_*` tools need an open session.** They drive the warm session opened by `profile_start`; calling them on a profile without one returns 409. Selectors are CSS, not XPath or role/name; call `session_snapshot` first when you do not know a selector.
+- **Dialogs are left open, as in a normal browser.** While an alert / confirm / prompt is open the page is blocked and `session_*` tools fail with 409 naming the dialog; answer it with `session_dialog`, then retry. A beforeunload caused by your own `session_goto` or click is accepted automatically.
 - **`session_eval` returns an envelope.** A page-side JavaScript error comes back as data (`{ok: false, error, error_type}`), not as a tool failure; `result` follows the expression's type.
 - **`profile_stop` has two levels.** A profile can be "running" as a warm session or as a window launched from the app. The tool tries the session first and falls back to the app-level stop, which is idempotent for idle profiles. It returns `{name, stopped, closed}`.
 - **`profile_create` does not hard-code a kernel.** Leave `engine` empty to use the app's default; unknown values come back as a 422 listing the options.
 - **`proxy_check` failures are data.** An unreachable proxy returns `{ok: false, error}`; only an unreachable daemon raises.
-- **`profile_start` returns `cdp_endpoint`** (a `ws://` DevTools address) for Chrome kernels, so external tools can attach. A session driven from outside bypasses Nullprint's consistency guards: an outside tool can set a viewport, language or time zone that contradicts the profile's frozen fingerprint and make it detectable. Prefer the `session_*` tools; if you must attach, do not change anything the profile has not declared.
+- **`profile_start` returns `cdp_endpoint`** (a `ws://` DevTools address) for Chrome kernels with external debugging turned on in the app (off by default; Edit → Advanced → External debugging, needs a second verification, then reopen the profile), so external tools can attach. Otherwise it is `null`, with `cdp_unavailable` (reason code) and `cdp_note` saying why. A session driven from outside bypasses Nullprint's consistency guards: an outside tool can set a viewport, language or time zone that contradicts the profile's frozen fingerprint and make it detectable. Prefer the `session_*` tools; if you must attach, do not change anything the profile has not declared.
 
 ## What is deliberately not exposed
 

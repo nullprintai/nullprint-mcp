@@ -131,6 +131,12 @@ def _detail(resp: httpx.Response) -> str:
     detail = body.get("detail", body) if isinstance(body, dict) else body
     if isinstance(detail, dict) and detail.get("reason") in ("api_key_required", "invalid_api_key"):
         return detail["reason"]           # 401 的说明已在 _STATUS_HINT 里,别当成授权问题
+    if isinstance(detail, dict) and detail.get("reason") == "dialog_open":
+        return (f"a JavaScript {detail.get('type') or 'dialog'} is open on the page "
+                f"({json.dumps(detail.get('message') or '', ensure_ascii=False)}); the page is blocked until it is "
+                "answered — call session_dialog with action 'accept' or 'dismiss', then retry.")
+    if isinstance(detail, dict) and detail.get("reason") == "no_dialog":
+        return "no dialog is open on the session's page."
     if isinstance(detail, dict) and "reason" in detail:
         return _license_text(detail)
     return detail if isinstance(detail, str) else json.dumps(detail, ensure_ascii=False)

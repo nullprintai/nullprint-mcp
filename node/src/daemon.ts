@@ -113,6 +113,11 @@ function detail(status: number, text: string): string {
   if (d && typeof d === "object" && !Array.isArray(d)) {
     const r = (d as Record<string, unknown>).reason;
     if (r === "api_key_required" || r === "invalid_api_key") return String(r);
+    if (r === "dialog_open") {
+      const dd = d as Record<string, unknown>;
+      return `a JavaScript ${dd.type || "dialog"} is open on the page (${JSON.stringify(dd.message || "")}); the page is blocked until it is answered — call session_dialog with action 'accept' or 'dismiss', then retry.`;
+    }
+    if (r === "no_dialog") return "no dialog is open on the session's page.";
     if ("reason" in (d as object)) return licenseText(d as Record<string, unknown>);
   }
   return typeof d === "string" ? d : JSON.stringify(d);

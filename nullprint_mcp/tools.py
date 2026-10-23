@@ -6,6 +6,8 @@ argument checking and a readable error.
 """
 from __future__ import annotations
 
+from urllib.parse import quote
+
 from . import daemon
 from .daemon import DaemonError
 
@@ -14,10 +16,21 @@ from .daemon import DaemonError
 _CDP_KEYS = ("cdp_endpoint", "ws_endpoint", "cdp_url", "webSocketDebuggerUrl")
 
 _NO_CDP_NOTE = (
-    "This identity's browser core does not publish a CDP endpoint — only the Chrome "
-    "core does. Drive it through the daemon's /sessions/{name}/* commands instead "
-    "(goto, snapshot, click, type, screenshot, ...)."
+    "No CDP endpoint for this identity. Nullprint keeps external debugging off by "
+    "default: turn it on per identity in the app (Edit -> Advanced -> External "
+    "debugging, needs a second verification), then reopen the identity. The Firefox "
+    "core never publishes one. Without it, drive the browser through the daemon's "
+    "/sessions/{name}/* commands (goto, snapshot, click, type, screenshot, ...)."
 )
+
+
+# Same whitelist as the engine's own name check (engine/nullprint.py _check_name), plus
+# % and #: a name must stay ONE path segment. '%2F', '?' and '#' used to slip through and,
+# once the daemon decoded the URL, reach endpoints this server deliberately does not
+# expose (security audit H-5, 2026-10-21).
+_NAME_BAD = set('/\\:*?"<>|%#')
+_WIN_RESERVED = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)),
+                 *(f"LPT{i}" for i in range(1, 10))}
 
 
 def _identity_name(name: str) -> str:
@@ -25,9 +38,17 @@ def _identity_name(name: str) -> str:
     if not isinstance(name, str) or not name.strip():
         raise ValueError("name is required: the identity's name, e.g. 'bing-us'")
     clean = name.strip()
-    if "/" in clean or clean in (".", ".."):
-        raise ValueError(f"invalid identity name {name!r}: '/' and '.'/'..' are not allowed")
+    if (clean.startswith(".") or len(clean) > 120
+            or any(c in _NAME_BAD or ord(c) < 32 for c in clean)
+            or clean.split(".")[0].upper() in _WIN_RESERVED):
+        raise ValueError(f"invalid identity name {name!r}: it cannot start with '.', be longer than "
+                         f"120 characters, or contain / \\ : * ? \" < > | % # or control characters")
     return clean
+
+
+def _seg(clean: str) -> str:
+    """An already-validated name as one escaped URL path segment."""
+    return quote(clean, safe="")
 
 
 def profiles_list() -> list[dict]:
@@ -58,8 +79,12 @@ def profile_start(name: str, headless: bool = False) -> dict:
 
     Returns the session record: name, opened_at, idle_seconds, url (the page it
     is on), plus cdp_endpoint — a ws:// DevTools address you can attach your own
-    automation to. Only the Chrome browser core publishes one; on the Firefox
-    core it is None and cdp_note says what to use instead.
+    automation to. It is only published for Chrome-core identities that have
+    external debugging turned on in the app (off by default; Edit -> Advanced ->
+    External debugging, needs a second verification, then reopen the identity).
+    Otherwise it is None, cdp_unavailable gives the daemon's reason code
+    (external_debug_off, external_debug_not_granted, not_supported_for_engine,
+    starting) and cdp_note says what to do — the session commands work either way.
 
     Prefer the daemon's own commands over attaching to cdp_endpoint. A session
     driven from outside bypasses Nullprint's consistency guards, so an outside
@@ -72,13 +97,13 @@ def profile_start(name: str, headless: bool = False) -> dict:
     """
     clean = _identity_name(name)
     session = daemon.request(
-        "POST", f"/sessions/{clean}", json={"headless": bool(headless)}
+        "POST", f"/sessions/{_seg(clean)}", json={"headless": bool(headless)}
     ).json()
 
     out = dict(session)
     out["cdp_endpoint"] = next((session[k] for k in _CDP_KEYS if session.get(k)), None)
     if out["cdp_endpoint"] is None:
-        out["cdp_note"] = _NO_CDP_NOTE
+        out["cdp_note"] = session.get("cdp_hint") or _NO_CDP_NOTE   # BUG-024:daemon 说了原因就用它的
     return out
 
 
@@ -107,7 +132,7 @@ def profile_stop(name: str) -> dict:
     """
     clean = _identity_name(name)
     try:
-        daemon.request("DELETE", f"/sessions/{clean}")
+        daemon.request("DELETE", f"/sessions/{_seg(clean)}")
         return {"name": clean, "stopped": True, "closed": ["session"]}
     except DaemonError as e:
         # 409 "session not open" is the usual answer for an identity that was
@@ -116,7 +141,7 @@ def profile_stop(name: str) -> dict:
         # (daemon down, 422, ...) is a real failure and must not be swallowed.
         if e.status not in (404, 409):
             raise
-    result = daemon.request("POST", f"/profiles/{clean}/stop").json()
+    result = daemon.request("POST", f"/profiles/{_seg(clean)}/stop").json()
     closed = result.get("stopped") or []
     return {"name": clean, "stopped": bool(closed), "closed": closed,
             "status": result.get("status")}
@@ -187,10 +212,10 @@ def profile_settings(name: str, force_dark: bool | None = None) -> dict:
     clean = _identity_name(name)
     if force_dark is None:
         raise ValueError("nothing to change: pass force_dark")
-    current = daemon.request("GET", f"/profiles/{clean}").json()
+    current = daemon.request("GET", f"/profiles/{_seg(clean)}").json()
     launch = dict((current.get("meta") or {}).get("launch") or {})
     launch["forceDark"] = bool(force_dark)
-    daemon.request("PATCH", f"/profiles/{clean}", json={"launch": launch})
+    daemon.request("PATCH", f"/profiles/{_seg(clean)}", json={"launch": launch})
     return {"name": clean, "launch": launch}
 
 
@@ -218,7 +243,7 @@ def profile_checkup(name: str, live: bool = False) -> dict:
     """
     clean = _identity_name(name)
     return daemon.request(
-        "GET", f"/profiles/{clean}/checkup", params={"live": bool(live)}
+        "GET", f"/profiles/{_seg(clean)}/checkup", params={"live": bool(live)}
     ).json()
 
 
@@ -271,7 +296,7 @@ def profile_delete(name: str) -> dict:
     is still running (409).
     """
     clean = _identity_name(name)
-    daemon.request("DELETE", f"/profiles/{clean}")
+    daemon.request("DELETE", f"/profiles/{_seg(clean)}")
     return {"name": clean, "deleted": True, "recoverable": True,
             "note": "in the recycle bin; profile_restore brings it back"}
 
@@ -307,7 +332,7 @@ def profile_restore(name: str) -> dict:
     name since (409) — rename or delete that one first, then restore.
     """
     clean = _identity_name(name)
-    return daemon.request("POST", f"/trash/{clean}/restore").json()
+    return daemon.request("POST", f"/trash/{_seg(clean)}/restore").json()
 
 
 def session_goto(name: str, url: str) -> dict:
@@ -328,7 +353,7 @@ def session_goto(name: str, url: str) -> dict:
     if not isinstance(url, str) or not url.strip():
         raise ValueError("url is required: the page to navigate to, e.g. 'https://example.com'")
     return daemon.request(
-        "POST", f"/sessions/{clean}/goto", json={"url": url.strip()}
+        "POST", f"/sessions/{_seg(clean)}/goto", json={"url": url.strip()}
     ).json()
 
 
@@ -347,7 +372,7 @@ def session_snapshot(name: str) -> dict:
     first) or the identity does not exist (404).
     """
     clean = _identity_name(name)
-    return daemon.request("GET", f"/sessions/{clean}/snapshot").json()
+    return daemon.request("GET", f"/sessions/{_seg(clean)}/snapshot").json()
 
 
 def session_click_selector(name: str, selector: str) -> dict:
@@ -369,7 +394,7 @@ def session_click_selector(name: str, selector: str) -> dict:
     if not isinstance(selector, str) or not selector.strip():
         raise ValueError("selector is required: a CSS selector, e.g. 'button#submit'")
     return daemon.request(
-        "POST", f"/sessions/{clean}/click_selector", json={"selector": selector.strip()}
+        "POST", f"/sessions/{_seg(clean)}/click_selector", json={"selector": selector.strip()}
     ).json()
 
 
@@ -393,7 +418,7 @@ def session_fill_selector(name: str, selector: str, text: str) -> dict:
     if not isinstance(selector, str) or not selector.strip():
         raise ValueError("selector is required: a CSS selector, e.g. 'input[name=email]'")
     return daemon.request(
-        "POST", f"/sessions/{clean}/fill_selector",
+        "POST", f"/sessions/{_seg(clean)}/fill_selector",
         json={"selector": selector.strip(), "value": text},
     ).json()
 
@@ -413,7 +438,7 @@ def session_press(name: str, key: str) -> dict:
     """
     clean = _identity_name(name)
     return daemon.request(
-        "POST", f"/sessions/{clean}/press", json={"key": key}
+        "POST", f"/sessions/{_seg(clean)}/press", json={"key": key}
     ).json()
 
 
@@ -440,7 +465,7 @@ def session_eval(name: str, expr: str) -> dict:
     if not isinstance(expr, str) or not expr.strip():
         raise ValueError("expr is required: the JavaScript expression to evaluate")
     return daemon.request(
-        "POST", f"/sessions/{clean}/eval", json={"expr": expr}
+        "POST", f"/sessions/{_seg(clean)}/eval", json={"expr": expr}
     ).json()
 
 
@@ -459,7 +484,7 @@ def session_tabs(name: str) -> dict:
     not exist (404).
     """
     clean = _identity_name(name)
-    return daemon.request("GET", f"/sessions/{clean}/tabs").json()
+    return daemon.request("GET", f"/sessions/{_seg(clean)}/tabs").json()
 
 
 def session_switch_tab(name: str, index: int) -> dict:
@@ -479,8 +504,38 @@ def session_switch_tab(name: str, index: int) -> dict:
     """
     clean = _identity_name(name)
     return daemon.request(
-        "POST", f"/sessions/{clean}/switch_tab", json={"index": index}
+        "POST", f"/sessions/{_seg(clean)}/switch_tab", json={"index": index}
     ).json()
+
+
+def session_dialog(name: str, action: str, prompt_text: str | None = None) -> dict:
+    """Answer the JavaScript dialog (alert, confirm, prompt, beforeunload) open on the session's page.
+
+    Dialogs are left open, as in a normal browser: while one is open the page
+    is blocked and the other session_* tools fail with 409 "a JavaScript
+    <type> is open on the page (<message>)". Call this to answer it, then
+    retry. A beforeunload that your own session_goto (or click) causes is
+    accepted automatically and never shows up here.
+
+    Args:
+        name: identity name, exactly as profiles_list reports it.
+        action: "accept" (OK / Leave) or "dismiss" (Cancel / Stay).
+        prompt_text: for a prompt() dialog, the text to enter before
+            accepting; omit it to accept the prompt's default value.
+
+    Returns {ok, action, type, message} for the dialog that was answered.
+    Fails with a readable message if no dialog is open (409), the session
+    is not open (409 — call profile_start first) or the identity does not
+    exist (404).
+    """
+    clean = _identity_name(name)
+    act = action.strip().lower() if isinstance(action, str) else action
+    if act not in ("accept", "dismiss"):
+        raise ValueError("action must be 'accept' or 'dismiss'")
+    body = {"action": act}
+    if prompt_text is not None:
+        body["prompt_text"] = prompt_text
+    return daemon.request("POST", f"/sessions/{_seg(clean)}/dialog", json=body).json()
 
 
 TOOLS = (profiles_list, profile_start, profile_stop,
@@ -488,4 +543,4 @@ TOOLS = (profiles_list, profile_start, profile_stop,
          profile_delete, trash_list, profile_restore,
          session_goto, session_snapshot, session_click_selector,
          session_fill_selector, session_press, session_eval,
-         session_tabs, session_switch_tab)
+         session_tabs, session_switch_tab, session_dialog)

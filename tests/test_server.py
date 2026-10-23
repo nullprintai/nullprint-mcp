@@ -117,7 +117,7 @@ def test_server_exposes_every_tool_with_a_description():
                             "profile_delete", "trash_list", "profile_restore",
                             "session_goto", "session_snapshot", "session_click_selector",
                             "session_fill_selector", "session_press", "session_eval",
-                            "session_tabs", "session_switch_tab"}
+                            "session_tabs", "session_switch_tab", "session_dialog"}
     for tool in by_name.values():
         assert tool.description and len(tool.description) > 40
 
@@ -169,7 +169,7 @@ def test_profile_start_warns_that_external_cdp_bypasses_the_guards():
     desc = _flat(_listed_tools()["profile_start"].description)
     assert "bypasses Nullprint's consistency guards" in desc
     assert "at your own risk" in desc
-    assert "Only the Chrome browser core publishes one" in desc
+    assert "external debugging turned on" in desc and "cdp_unavailable" in desc   # BUG-024:默认关,要先打开
 
 
 def test_proxy_check_tells_the_reader_a_dead_proxy_is_data():

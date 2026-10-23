@@ -65,6 +65,7 @@ If the daemon is not running the tools say so plainly instead of throwing a conn
 | `session_eval` | Run JavaScript on the page, returns `{ok, result}` |
 | `session_tabs` | List the session's tabs and the active one |
 | `session_switch_tab` | Bring a tab to the front |
+| `session_dialog` | Answer the JavaScript dialog (alert / confirm / prompt / beforeunload) open on the page: `accept` or `dismiss` |
 
 `session_*` tools drive the warm session opened by `profile_start`; on a profile without one they return 409 and tell the agent to start it first. Permanent deletion is deliberately not exposed: emptying the recycle bin is a human action in the desktop app.
 

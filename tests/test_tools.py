@@ -101,6 +101,21 @@ def test_profile_start_explains_missing_cdp_endpoint(fake_daemon):
     assert "/sessions/{name}/*" in out["cdp_note"]
 
 
+def test_1022_bug024_profile_start_passes_daemon_reason_for_missing_cdp(fake_daemon):
+    """BUG-024:Chrome 身份没打开外部调试接入时 cdp_endpoint 也是 None——不能再说「只有 Chrome 内核才有」,
+    照传 daemon 给的 cdp_unavailable,cdp_note 用 daemon 的 cdp_hint。"""
+    hint = "External debugging is off for this profile (the default). ..."
+    fake_daemon(_json({**SESSION, "cdp_endpoint": None, "cdp_unavailable": "external_debug_off", "cdp_hint": hint}, 201))
+    out = tools.profile_start("bing-us")
+    assert out["cdp_endpoint"] is None
+    assert out["cdp_unavailable"] == "external_debug_off" and out["cdp_note"] == hint
+
+
+def test_1022_bug024_old_daemon_note_mentions_external_debugging(fake_daemon):
+    fake_daemon(_json(SESSION, 201))                                  # 老 daemon 不给原因:通用说明里也要提外部调试接入
+    assert "external debugging" in tools.profile_start("bing-us")["cdp_note"]
+
+
 def test_profile_start_unknown_identity_is_readable(fake_daemon):
     fake_daemon(_not_found("profile not found: ghost"))
     with pytest.raises(DaemonError) as e:

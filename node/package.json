@@ -1,6 +1,6 @@
 {
   "name": "nullprint-mcp",
-  "version": "0.1.3",
+  "version": "0.1.5",
   "mcpName": "io.github.nullprintai/nullprint-mcp",
   "description": "MCP server for Nullprint, the multi-profile browser: create, launch, check and drive browser profiles from any MCP-capable AI agent. Node build, no Python needed.",
   "license": "MIT",

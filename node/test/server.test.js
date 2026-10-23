@@ -90,7 +90,7 @@ test("initialize + tools/list: server name nullprint, exactly the 17 tools, no p
   assert.deepEqual(
     tools.map((t) => t.name),
     ["profiles_list", "profile_start", "profile_stop", "profile_create", "profile_settings", "profile_checkup", "proxy_check", "profile_delete", "trash_list", "profile_restore",
-      "session_goto", "session_snapshot", "session_click_selector", "session_fill_selector", "session_press", "session_eval", "session_tabs", "session_switch_tab"],
+      "session_goto", "session_snapshot", "session_click_selector", "session_fill_selector", "session_press", "session_eval", "session_tabs", "session_switch_tab", "session_dialog"],
   );
   for (const t of tools) assert.ok(t.inputSchema && t.inputSchema.type === "object", t.name);
   assert.ok(!tools.some((t) => /purge|trash_delete|empty/.test(t.name)));
@@ -130,6 +130,27 @@ test("profile_stop falls back to the identity-level stop on 409 but not on other
   srv.close();
 });
 
+test("BUG-024: profile_start passes the daemon's cdp_unavailable and uses cdp_hint as cdp_note", async () => {
+  const hint = "External debugging is off for this profile (the default). ...";
+  const { srv, port } = await fakeDaemon({
+    "POST /sessions/off": [201, { name: "off", url: "about:blank", cdp_endpoint: null, cdp_unavailable: "external_debug_off", cdp_hint: hint }],
+    "POST /sessions/old": [201, { name: "old", url: "about:blank" }],
+  });
+  const c = new Client(["--port", String(port)]);
+  try {
+    await c.init();
+    const off = JSON.parse((await c.call("profile_start", { name: "off" })).result.content[0].text);
+    assert.equal(off.cdp_endpoint, null);
+    assert.equal(off.cdp_unavailable, "external_debug_off");
+    assert.equal(off.cdp_note, hint);
+    const old = JSON.parse((await c.call("profile_start", { name: "old" })).result.content[0].text);
+    assert.match(old.cdp_note, /external debugging/);
+  } finally {
+    c.close();
+    srv.close();
+  }
+});
+
 test("profile_start adds cdp_endpoint / cdp_note; profile_create drops unset fields; checkup passes live", async () => {
   const { srv, port, seen } = await fakeDaemon({
     "POST /sessions/ff": [200, { name: "ff", url: "about:blank" }],
@@ -141,7 +162,7 @@ test("profile_start adds cdp_endpoint / cdp_note; profile_create drops unset fie
   await c.init();
   const ff = JSON.parse((await c.call("profile_start", { name: "ff" })).result.content[0].text);
   assert.equal(ff.cdp_endpoint, null);
-  assert.match(ff.cdp_note, /does not publish a CDP endpoint/);
+  assert.match(ff.cdp_note, /No CDP endpoint/);
   const ch = JSON.parse((await c.call("profile_start", { name: "ch" })).result.content[0].text);
   assert.equal(ch.cdp_endpoint, "ws://127.0.0.1:9/devtools");
   assert.equal(ch.cdp_note, undefined);
@@ -170,6 +191,29 @@ test("readable errors: bad name, quota 403, daemon down", async () => {
   assert.equal(r.result.isError, true);
   assert.match(r.result.content[0].text, /cannot reach the Nullprint daemon at http:\/\/127\.0\.0\.1:1/);
   down.close();
+});
+
+// 安全体检 H-5(2026-10-21):'%2F' / '?' / '#' / '\' 曾经能过,名字原样拼进 URL,daemon 解码后路由到 MCP 不开放的接口
+test("1021 H-5: names that would leave their path segment never reach the daemon; good names are escaped", async () => {
+  const { srv, port, seen } = await fakeDaemon({ "GET /profiles/my%20shop/checkup": [200, { summary: "pass" }] });
+  const c = new Client(["--port", String(port)]);
+  try {
+    await c.init();
+    for (const bad of ["a%2F..%2Fsettings", "victim%2Fcookies%2Fexport?", "v?x", "v#x", "a\\b", ".x", "a:b", "CON", "x".repeat(121)]) {
+      for (const tool of ["profile_checkup", "profile_delete", "session_snapshot"]) {
+        const r = await c.call(tool, { name: bad });
+        assert.equal(r.result.isError, true, `${tool}(${bad})`);
+        assert.match(r.result.content[0].text, /invalid identity name/);
+      }
+    }
+    assert.equal(seen.length, 0);
+    const ok = await c.call("profile_checkup", { name: "my shop" });
+    assert.notEqual(ok.result.isError, true);
+    assert.equal(seen[0].path, "/profiles/my%20shop/checkup");
+  } finally {
+    c.close();
+    srv.close();
+  }
 });
 
 test("no daemon.json and no env: says the daemon is not running", async () => {
@@ -220,4 +264,36 @@ test("profile_create takes force_dark as launch.forceDark; profile_settings merg
   assert.equal(out.launch.forceDark, true);
   c.close();
   srv.close();
+});
+
+// 0.2.18:会话里的网页弹窗留给用户;弹窗开着时命令 409 dialog_open,session_dialog 处理它(同 Python 版)
+test("1022 session_dialog answers the open dialog; dialog_open / no_dialog errors say what to do", async () => {
+  const { srv, port, seen } = await fakeDaemon({
+    "POST /sessions/shop-1/dialog": (s) =>
+      s.body.action === "dismiss" ? [409, { detail: { reason: "no_dialog" } }] : [200, { ok: true, action: "accept", type: "confirm", message: "Delete?" }],
+    "POST /sessions/shop-1/click_selector": [409, { detail: { reason: "dialog_open", type: "confirm", message: "Delete?" } }],
+  });
+  const c = new Client(["--port", String(port)]);
+  try {
+    await c.init();
+    const blocked = await c.call("session_click_selector", { name: "shop-1", selector: "button#del" });
+    assert.equal(blocked.result.isError, true);
+    assert.match(blocked.result.content[0].text, /409 .*JavaScript confirm is open on the page \("Delete\?"\).*session_dialog/);
+    assert.doesNotMatch(blocked.result.content[0].text, /license/);
+    const ok = JSON.parse((await c.call("session_dialog", { name: "shop-1", action: "accept", prompt_text: "Alice" })).result.content[0].text);
+    assert.equal(ok.type, "confirm");
+    assert.deepEqual(seen.at(-1).body, { action: "accept", prompt_text: "Alice" });
+    const none = await c.call("session_dialog", { name: "shop-1", action: " Dismiss " });
+    assert.deepEqual(seen.at(-1).body, { action: "dismiss" });
+    assert.equal(none.result.isError, true);
+    assert.match(none.result.content[0].text, /409 .*no dialog is open/);
+    const n = seen.length;
+    const bad = await c.call("session_dialog", { name: "shop-1", action: "ok" });
+    assert.equal(bad.result.isError, true);
+    assert.match(bad.result.content[0].text, /action must be 'accept' or 'dismiss'/);
+    assert.equal(seen.length, n);
+  } finally {
+    c.close();
+    srv.close();
+  }
 });
