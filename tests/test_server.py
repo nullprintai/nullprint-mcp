@@ -153,7 +153,8 @@ def test_tool_schemas_require_only_what_is_mandatory():
 
 def test_profile_create_schema_offers_the_ledger_and_startup_tabs():
     props = _listed_tools()["profile_create"].inputSchema["properties"]
-    assert set(props) == {"name", "engine", "proxy", "group", "tags", "note", "urls", "force_dark"}
+    assert set(props) == {"name", "engine", "proxy", "group", "tags", "note", "urls", "force_dark",
+                          "os", "mobile_model"}     # 0e106 / 0e107:手机身份
 
 
 def test_live_checkup_warns_that_it_starts_a_browser():

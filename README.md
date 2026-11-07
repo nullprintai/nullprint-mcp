@@ -1,6 +1,6 @@
 # nullprint-mcp
 
-An [MCP](https://modelcontextprotocol.io) server for [Nullprint](https://nullprint.ai), the multi-profile browser. It lets any MCP-capable AI agent (Claude Code, Claude Desktop, OpenAI Codex, Kimi, …) create browser profiles, launch them, run consistency check-ups and drive the pages inside a running profile.
+An [MCP](https://modelcontextprotocol.io) server for [Nullprint](https://nullprint.ai), the AI antidetect browser. It lets any MCP-capable AI agent (Claude Code, Claude Desktop, OpenAI Codex, Kimi, …) create browser profiles, launch them, run consistency check-ups and drive the pages inside a running profile.
 
 <!-- mcp-name: io.github.nullprintai/nullprint-mcp -->
 
@@ -101,7 +101,7 @@ MIT. Copyright (c) 2026 HENGCHENG LLC.
 
 ## 中文说明
 
-这是 [Nullprint](https://nullprint.ai)（多身份指纹浏览器）的 MCP 服务：Claude Code、Claude Desktop、OpenAI Codex、Kimi 等任何支持 MCP 的 AI 都可以用它建身份、启动浏览器、做一致性体检、驱动身份里的网页。它只是本地 daemon HTTP 接口上的薄薄一层，每个工具对应 daemon 的一个端点；daemon、浏览器内核和指纹引擎随 Nullprint 桌面应用发布，不在本包内。
+这是 [Nullprint](https://nullprint.ai)（AI 指纹浏览器）的 MCP 服务：Claude Code、Claude Desktop、OpenAI Codex、Kimi 等任何支持 MCP 的 AI 都可以用它建身份、启动浏览器、做一致性体检、驱动身份里的网页。它只是本地 daemon HTTP 接口上的薄薄一层，每个工具对应 daemon 的一个端点；daemon、浏览器内核和指纹引擎随 Nullprint 桌面应用发布，不在本包内。
 
 **前提**：本机装好并登录 Nullprint 桌面应用；本机有 Python 3.11+，推荐用 [uv](https://docs.astral.sh/uv/)（首次运行自动装包）。
 

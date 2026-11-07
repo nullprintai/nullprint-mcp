@@ -8,9 +8,11 @@ server.
 """
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 import pathlib
+import urllib.parse
 
 import httpx
 
@@ -49,7 +51,11 @@ def runtime_dir() -> pathlib.Path:
 
 
 def base_url() -> str:
-    """Resolve the daemon's base URL, most explicit source first.
+    return _resolve()[0]
+
+
+def _resolve() -> tuple[str, bool]:
+    """(base URL, found via daemon.json?). Resolve the daemon's base URL, most explicit source first.
 
     1. `--daemon-url` / `--port` (set_daemon_url)
     2. `NULLPRINT_DAEMON_URL` (`SUPLOGIN_DAEMON_URL` still honoured for old setups)
@@ -57,13 +63,13 @@ def base_url() -> str:
     4. `<runtime dir>/daemon.json`, which the running daemon writes
     """
     if _daemon_url:
-        return _daemon_url
+        return _daemon_url, False
     env_url = os.environ.get("NULLPRINT_DAEMON_URL") or os.environ.get("SUPLOGIN_DAEMON_URL")
     if env_url:
-        return env_url.rstrip("/")
+        return env_url.rstrip("/"), False
     env_port = os.environ.get("NULLPRINT_PORT")
     if env_port:
-        return f"http://{DEFAULT_HOST}:{env_port}"
+        return f"http://{DEFAULT_HOST}:{env_port}", False
 
     path = runtime_dir() / "daemon.json"
     try:
@@ -82,7 +88,40 @@ def base_url() -> str:
     port = info.get("port")
     if not port:
         raise DaemonError(f"{path} has no 'port' field; restart the daemon or pass --daemon-url.")
-    return f"http://{DEFAULT_HOST}:{port}"
+    return f"http://{DEFAULT_HOST}:{port}", True
+
+
+# 0e121:daemon.json 找到的地址核过是自己的 daemon 就记下(地址 + Key),同一进程里不再核
+_verified: set[tuple[str, str | None]] = set()
+
+
+def _check_own_daemon(client: httpx.Client, url: str, key: str | None) -> None:
+    """0e121(同 0e120 / BUG-083 的判定):daemon.json 的端口上应答的必须是这个数据目录的 daemon——
+    带它的 Key 调要鉴权的 GET /sessions,200 且回 JSON 数组才算。daemon 退出后端口被别的程序占了、
+    或者是另一个数据目录的 daemon(Key 不对回 401),都说清楚,别把对方的回包当成 daemon 的错误。"""
+    if (url, key) in _verified:
+        return
+    try:
+        r = client.get(f"{url}/sessions", headers={"X-API-Key": key} if key else {})
+    except httpx.HTTPError:
+        r = None
+    try:
+        ours = r is not None and r.status_code == 200 and isinstance(r.json(), list)
+    except ValueError:
+        ours = False
+    if not ours:
+        if r is None:
+            raise DaemonError(
+                f"cannot reach the Nullprint daemon at {url} (the port recorded in {runtime_dir() / 'daemon.json'}). "
+                "It is probably not running — open the Nullprint desktop app (it starts the daemon and rewrites "
+                "daemon.json), then retry.")
+        raise DaemonError(
+            f"the port recorded in {runtime_dir() / 'daemon.json'} ({url.rsplit(':', 1)[-1]}) is answered by something "
+            "that is not the Nullprint daemon of this data directory — the daemon has probably exited and another "
+            "program now uses that port, or another Nullprint data directory's daemon is there. Open the Nullprint "
+            "desktop app (it restarts the daemon on a free port and rewrites daemon.json), then retry; or pass "
+            "--daemon-url with the right address.")
+    _verified.add((url, key))
 
 
 def api_key() -> str | None:
@@ -122,6 +161,22 @@ def _license_text(d: dict) -> str:
             + counts + ". Authorize it from the desktop app, then retry.")
 
 
+_NOT_DAEMON = ("the answer is not in the Nullprint daemon's format, so it probably did not come from the daemon — "
+               "a system proxy (or HTTP_PROXY / HTTPS_PROXY) may have intercepted the request; check the proxy "
+               "settings, e.g. add 127.0.0.1 and localhost to its exceptions")
+
+
+def _is_loopback(url: str) -> bool:
+    """127.0.0.1 / localhost / ::1:the local daemon. Requests there never go through a proxy."""
+    host = (urllib.parse.urlsplit(url).hostname or "").lower()
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
 def _detail(resp: httpx.Response) -> str:
     """Pull the readable part out of a FastAPI error body."""
     try:
@@ -144,15 +199,19 @@ def _detail(resp: httpx.Response) -> str:
 
 def request(method: str, path: str, **kw) -> httpx.Response:
     """Call the daemon. Raises DaemonError with a readable message on any failure."""
-    url = base_url()
+    url, discovered = _resolve()
     headers = dict(kw.pop("headers", {}) or {})
     k = api_key()
     if k:
         headers["X-API-Key"] = k
     try:
-        with httpx.Client(timeout=TIMEOUT) as client:
+        # 连本机 daemon 不走代理:系统 / 环境代理没把 127.0.0.1 列进例外时,请求会进代理(0.2.27,员工机 Shadowrocket)
+        with httpx.Client(timeout=TIMEOUT, trust_env=not _is_loopback(url)) as client:
+            if discovered:
+                _check_own_daemon(client, url, k)
             resp = client.request(method, f"{url}{path}", headers=headers, **kw)
     except httpx.HTTPError as e:
+        _verified.discard((url, k))          # 连不上了:下次重核(daemon 可能换了端口)
         raise DaemonError(
             f"cannot reach the Nullprint daemon at {url} ({type(e).__name__}: {e}). "
             "Check that it is running, or pass --daemon-url with the right address."
@@ -160,6 +219,12 @@ def request(method: str, path: str, **kw) -> httpx.Response:
     if resp.is_success:
         return resp
     hint = _STATUS_HINT.get(resp.status_code, "the daemon refused the request")
+    try:
+        resp.json()
+    except ValueError:
+        # daemon 的错误都是 JSON;空 body / 非 JSON 多半不是 daemon 回的(0.2.27:系统代理回空 503,
+        # 原来报「could not reach its backend」误导人)
+        hint = _NOT_DAEMON
     raise DaemonError(
         f"daemon {method} {path} -> {resp.status_code} ({hint}): {_detail(resp)}",
         status=resp.status_code,

@@ -3,6 +3,23 @@
 Both builds of nullprint-mcp (Python on PyPI, Node on npm) ship the same tools and the
 same version number.
 
+## 0.1.6 — 2026-11-07
+
+Needs Nullprint 0.2.27 or later for phone identities; everything else works with 0.2.18.
+
+- **Phone identities.** `profile_create` takes `os` (`"windows"`, `"macos"`, `"linux"`, `"android"`, `"ios"`)
+  and `mobile_model`. Android and iOS (simulated) identities need the Chrome kernel; without `mobile_model`
+  a model is picked from the identity's seed, and if the OS has no default model the call is rejected with
+  `mobile_model_required` and the message lists the model ids to choose from.
+- **Local daemon connections never go through a proxy.** System proxy settings and `HTTP(S)_PROXY` /
+  `ALL_PROXY` are ignored for 127.0.0.1 / localhost / ::1, so a proxy app without a loopback exception no
+  longer turns every call into a 503. If the reply still doesn't look like the daemon's, the error says
+  a proxy may be intercepting it and to check the proxy exceptions.
+- **The daemon is checked before use.** The port in `daemon.json` must answer with this data directory's
+  key; if another program holds the port, the error says so instead of sending requests to it. An address
+  given explicitly with `--daemon-url`, `NULLPRINT_DAEMON_URL` or `NULLPRINT_PORT` is used as is.
+- Package description now says "AI antidetect browser".
+
 ## 0.1.5 — 2026-10-23
 
 Needs Nullprint 0.2.18 or later for the new tool; everything else works with 0.2.17.

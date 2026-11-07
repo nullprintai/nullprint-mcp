@@ -126,10 +126,12 @@ Returns {name, os, created}. Fails with a readable message if the name is taken 
       note: z.string().optional().describe("local ledger note, free text"),
       urls: z.array(z.string()).optional().describe("startup tabs — pages opened automatically when the identity starts"),
       force_dark: z.boolean().optional().describe("personal display preference, OFF by default. true inverts web pages that have no dark theme of their own (Google Ads and the like) to dark; sites may notice the changed colors, so use it only on identities the user manages for themselves, never on accounts being built up. Leave unset to keep pages exactly as the sites render them. Chrome-engine identities only."),
+      os: z.string().optional().describe('which operating system the identity presents as: "windows", "macos", "linux", "android" or "ios". Leave unset for this computer\'s own OS. "android" and "ios" are phone identities: Chrome engine only, and they need a recent Chrome kernel (an older one is rejected with os_needs_kernel). "ios" is simulated: it sets the browser identity, screen and touch to match an iPhone, suited to mobile web pages.'),
+      mobile_model: z.string().optional().describe("the phone model for an android / ios identity, as an id. If you leave it unset and the OS has no default model yet, the call is rejected with mobile_model_required and the message lists the accepted ids — pick one and call again. Passing it for a desktop OS is rejected."),
     },
     handler: (a) => {
       const clean = identityName(a.name);
-      const body: Record<string, unknown> = { name: clean, engine: a.engine, proxy: a.proxy, group: a.group, tags: a.tags, note: a.note, urls: a.urls };
+      const body: Record<string, unknown> = { name: clean, engine: a.engine, proxy: a.proxy, group: a.group, tags: a.tags, note: a.note, urls: a.urls, os: a.os, mobile_model: a.mobile_model };
       for (const k of Object.keys(body)) if (body[k] == null) delete body[k];
       if (a.force_dark != null) body.launch = { forceDark: Boolean(a.force_dark) };
       return request("POST", "/profiles", { json: body });

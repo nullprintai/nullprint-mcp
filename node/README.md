@@ -1,6 +1,6 @@
 # nullprint-mcp (Node build)
 
-An [MCP](https://modelcontextprotocol.io) server for [Nullprint](https://nullprint.ai), the multi-profile browser. It lets any MCP-capable AI agent (Claude Code, Claude Desktop, Cursor, Windsurf, Cline, OpenAI Codex, Kimi, …) create browser profiles, launch them, run consistency check-ups and drive the pages inside a running profile.
+An [MCP](https://modelcontextprotocol.io) server for [Nullprint](https://nullprint.ai), the AI antidetect browser. It lets any MCP-capable AI agent (Claude Code, Claude Desktop, Cursor, Windsurf, Cline, OpenAI Codex, Kimi, …) create browser profiles, launch them, run consistency check-ups and drive the pages inside a running profile.
 
 This is the Node.js build: a single bundled file with no runtime dependencies, so `npx nullprint-mcp` works wherever Node 18+ is present, with no Python or uv on the machine. The Python build on PyPI (`uvx nullprint-mcp`) exposes the same 18 tools with the same names, arguments and behaviour; pick whichever runtime your client already has.
 
@@ -88,7 +88,7 @@ MIT. Copyright (c) 2026 HENGCHENG LLC.
 
 ## 中文说明
 
-这是 [Nullprint](https://nullprint.ai)（多身份指纹浏览器）MCP 服务的 Node 版：单文件、零运行时依赖，只要机器上有 Node 18+，`npx nullprint-mcp` 就能跑，不需要 Python 或 uv。PyPI 上的 Python 版（`uvx nullprint-mcp`）提供同样的 17 个工具，名字、参数、行为完全一致，按你的客户端自带哪个运行时选。
+这是 [Nullprint](https://nullprint.ai)（AI 指纹浏览器）MCP 服务的 Node 版：单文件、零运行时依赖，只要机器上有 Node 18+，`npx nullprint-mcp` 就能跑，不需要 Python 或 uv。PyPI 上的 Python 版（`uvx nullprint-mcp`）提供同样的 17 个工具，名字、参数、行为完全一致，按你的客户端自带哪个运行时选。
 
 **接入**：
 

@@ -8,6 +8,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import fs from "node:fs";
+import os from "node:os";
 
 const DIST = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "dist", "index.js");
 
@@ -246,6 +247,20 @@ test("--help goes to stderr, stdout stays empty; bad args exit 2", async () => {
   assert.match(both.err, /not both/);
 });
 
+test("profile_create passes os and mobile_model through for phone identities (0e106 / 0e107)", async () => {
+  const { srv, port, seen } = await fakeDaemon({
+    "POST /profiles": (s) => [201, { name: s.body.name, os: s.body.os || "windows", created: "2026-11-06" }],
+  });
+  const c = new Client(["--port", String(port)]);
+  await c.init();
+  await c.call("profile_create", { name: "phone-1", engine: "chromium", os: "ios", mobile_model: "iphone-12-pro-ios26" });
+  assert.deepEqual(seen.at(-1).body, { name: "phone-1", engine: "chromium", os: "ios", mobile_model: "iphone-12-pro-ios26" });
+  await c.call("profile_create", { name: "plain-1" });
+  assert.deepEqual(seen.at(-1).body, { name: "plain-1" });
+  c.close();
+  srv.close();
+});
+
 test("profile_create takes force_dark as launch.forceDark; profile_settings merges it into the existing launch settings", async () => {
   const { srv, port, seen } = await fakeDaemon({
     "POST /profiles": (s) => [201, { name: s.body.name, os: "macos", created: "2026-10-19" }],
@@ -292,6 +307,82 @@ test("1022 session_dialog answers the open dialog; dialog_open / no_dialog error
     assert.equal(bad.result.isError, true);
     assert.match(bad.result.content[0].text, /action must be 'accept' or 'dismiss'/);
     assert.equal(seen.length, n);
+  } finally {
+    c.close();
+    srv.close();
+  }
+});
+
+
+// 0e121(xkshi 11-06,0.2.27):daemon.json 的端口上应答的不是这个数据目录的 daemon 时说清楚(同 0e120 / BUG-083 判定:
+// 带 Key 调 GET /sessions,200 且 JSON 数组才算);只核从 daemon.json 找到的地址,核过一次不再核。
+function homeWithDaemonJson(port) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "np-mcp-0e121-"));
+  fs.writeFileSync(path.join(dir, "daemon.json"), JSON.stringify({ port, api_key: "np_abc", pid: 1 }));
+  return { NULLPRINT_HOME: dir, NULLPRINT_DAEMON_URL: "", SUPLOGIN_DAEMON_URL: "", NULLPRINT_PORT: "", NULLPRINT_API_KEY: "" };
+}
+
+test("0e121: a foreign program on the daemon.json port is named, and no real request is sent to it", async () => {
+  const { srv, port, seen } = await fakeDaemon({ "GET /sessions": [200, { hello: "not a list" }] });
+  const c = new Client([], homeWithDaemonJson(port));
+  try {
+    await c.init();
+    const r = await c.call("profiles_list", {});
+    assert.equal(r.result.isError, true);
+    assert.match(r.result.content[0].text, /not the Nullprint daemon/);
+    assert.match(r.result.content[0].text, /daemon\.json/);
+    assert.deepEqual(seen.map((s) => s.path), ["/sessions"]);
+  } finally {
+    c.close();
+    srv.close();
+  }
+});
+
+test("0e121: our own daemon is checked once, with the daemon.json key", async () => {
+  const { srv, port, seen } = await fakeDaemon({ "GET /sessions": [200, []], "GET /profiles": [200, []] });
+  const c = new Client([], homeWithDaemonJson(port));
+  try {
+    await c.init();
+    await c.call("profiles_list", {});
+    await c.call("profiles_list", {});
+    assert.deepEqual(seen.map((s) => s.path), ["/sessions", "/profiles", "/profiles"]);
+    assert.equal(seen[0].key, "np_abc");
+  } finally {
+    c.close();
+    srv.close();
+  }
+});
+
+// 0.2.27(xkshi 11-06,员工机上撞到):代理没把 127.0.0.1 列进例外时,连本机 daemon 的请求进了代理、代理回空 503。
+// 连回环地址一律不走代理(Node 设了 NODE_USE_ENV_PROXY=1 时 fetch / http 都会按 HTTP(S)_PROXY 走代理);
+// 回包不是 daemon 的格式(空 body / 非 JSON)时提示可能被系统代理拦截。
+const DEAD_PROXY = { NODE_USE_ENV_PROXY: "1", HTTP_PROXY: "http://127.0.0.1:9", HTTPS_PROXY: "http://127.0.0.1:9",
+                     http_proxy: "http://127.0.0.1:9", https_proxy: "http://127.0.0.1:9", NO_PROXY: "", no_proxy: "" };
+
+test("0.2.27: the local daemon is reached even when a proxy is configured", async () => {
+  const { srv, port, seen } = await fakeDaemon({ "GET /sessions": [200, []], "GET /profiles": [200, []] });
+  const c = new Client([], { ...homeWithDaemonJson(port), ...DEAD_PROXY });
+  try {
+    await c.init();
+    const r = await c.call("profiles_list", {});
+    assert.notEqual(r.result.isError, true, r.result.content?.[0]?.text);
+    assert.deepEqual(seen.map((s) => s.path), ["/sessions", "/profiles"]);
+  } finally {
+    c.close();
+    srv.close();
+  }
+});
+
+test("0.2.27: an answer that is not the daemon's format hints at a system proxy", async () => {
+  const srv = http.createServer((req, res) => { res.writeHead(503); res.end(); });
+  await new Promise((r) => srv.listen(0, "127.0.0.1", r));
+  const c = new Client(["--daemon-url", `http://127.0.0.1:${srv.address().port}`]);
+  try {
+    await c.init();
+    const r = await c.call("profiles_list", {});
+    assert.equal(r.result.isError, true);
+    assert.match(r.result.content[0].text, /503/);
+    assert.match(r.result.content[0].text, /system proxy/);
   } finally {
     c.close();
     srv.close();

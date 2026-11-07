@@ -150,7 +150,8 @@ def profile_stop(name: str) -> dict:
 def profile_create(name: str, engine: str | None = None, proxy: str | None = None,
                    group: str | None = None, tags: list[str] | None = None,
                    note: str | None = None, urls: list[str] | None = None,
-                   force_dark: bool | None = None) -> dict:
+                   force_dark: bool | None = None, os: str | None = None,
+                   mobile_model: str | None = None) -> dict:
     """Create a new identity. Its fingerprint is generated and frozen on the spot.
 
     You do not choose the fingerprint — the point of the product is that every
@@ -179,6 +180,18 @@ def profile_create(name: str, engine: str | None = None, proxy: str | None = Non
             on identities the user manages for themselves, never on accounts
             being built up. Leave unset to keep pages exactly as the sites
             render them. Chrome-engine identities only.
+        os: which operating system the identity presents as: "windows",
+            "macos", "linux", "android" or "ios". Leave unset for this
+            computer's own OS. "android" and "ios" are phone identities: Chrome
+            engine only, and they need a recent Chrome kernel (an older one is
+            rejected with os_needs_kernel). "ios" is simulated: it sets the
+            browser identity, screen and touch to match an iPhone, suited to
+            mobile web pages.
+        mobile_model: the phone model for an "android" / "ios" identity, as an
+            id. If you leave it unset and the OS has no default model yet, the
+            call is rejected with mobile_model_required and the message lists
+            the accepted ids — pick one and call again. Ignored for desktop OSes
+            (passing it there is rejected).
 
     Returns {name, os, created}. Fails with a readable message if the name is
     taken (409), if the quota is reached or the installation is unauthorized
@@ -186,7 +199,8 @@ def profile_create(name: str, engine: str | None = None, proxy: str | None = Non
     """
     clean = _identity_name(name)
     body = {"name": clean, "engine": engine, "proxy": proxy,
-            "group": group, "tags": tags, "note": note, "urls": urls}
+            "group": group, "tags": tags, "note": note, "urls": urls,
+            "os": os, "mobile_model": mobile_model}
     if force_dark is not None:
         body["launch"] = {"forceDark": bool(force_dark)}
     return daemon.request(

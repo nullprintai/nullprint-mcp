@@ -2,12 +2,12 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.nullprintai/nullprint-mcp",
   "title": "Nullprint",
-  "description": "Create, launch, check and drive Nullprint multi-profile browser profiles from any MCP agent.",
+  "description": "Create, launch, check and drive Nullprint AI antidetect browser profiles from any MCP agent.",
   "websiteUrl": "https://nullprint.ai/docs/mcp/",
   "repository": { "url": "https://github.com/nullprintai/nullprint-mcp", "source": "github" },
-  "version": "0.1.5",
+  "version": "0.1.6",
   "packages": [
-    { "registryType": "pypi", "identifier": "nullprint-mcp", "version": "0.1.5", "transport": { "type": "stdio" } },
-    { "registryType": "npm", "identifier": "nullprint-mcp", "version": "0.1.5", "transport": { "type": "stdio" } }
+    { "registryType": "pypi", "identifier": "nullprint-mcp", "version": "0.1.6", "transport": { "type": "stdio" } },
+    { "registryType": "npm", "identifier": "nullprint-mcp", "version": "0.1.6", "transport": { "type": "stdio" } }
   ]
 }
