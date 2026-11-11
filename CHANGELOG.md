@@ -3,7 +3,7 @@
 Both builds of nullprint-mcp (Python on PyPI, Node on npm) ship the same tools and the
 same version number.
 
-## 0.1.7 — unreleased
+## 0.1.7 — 2026-11-11
 
 Needs Nullprint 0.2.31 or later. `session_screenshot` also runs on 0.2.18–0.2.30, but those versions shoot at
 screen pixels, so on a high-DPI display a normal window goes over the size limit (the error says to update the
