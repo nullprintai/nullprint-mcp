@@ -3,10 +3,10 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { DEFAULT_HOST, setDaemonUrl } from "./daemon.js";
-import { TOOLS } from "./tools.js";
+import { TOOLS, ToolContent } from "./tools.js";
 
 export const SERVER_NAME = "nullprint";
-export const VERSION = "0.1.6";
+export const VERSION = "0.1.7";
 
 export const INSTRUCTIONS = `Nullprint runs browser identities: each one is a separate browser
 profile with its own frozen fingerprint, its own exit IP, and its own cookies, so
@@ -70,6 +70,7 @@ export function buildServer(daemonUrl: string | null = null): McpServer {
     server.registerTool(t.name, { description: t.description, inputSchema: t.shape }, async (args: Record<string, unknown>) => {
       try {
         const result = await t.handler(args ?? {});
+        if (result instanceof ToolContent) return { content: result.content }; // 0e160:截图 = 图片块 + 说明
         return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
       } catch (e) {
         return { content: [{ type: "text" as const, text: (e as Error).message }], isError: true };

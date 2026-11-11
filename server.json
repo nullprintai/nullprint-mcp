@@ -5,9 +5,9 @@
   "description": "Create, launch, check and drive Nullprint AI antidetect browser profiles from any MCP agent.",
   "websiteUrl": "https://nullprint.ai/docs/mcp/",
   "repository": { "url": "https://github.com/nullprintai/nullprint-mcp", "source": "github" },
-  "version": "0.1.6",
+  "version": "0.1.7",
   "packages": [
-    { "registryType": "pypi", "identifier": "nullprint-mcp", "version": "0.1.6", "transport": { "type": "stdio" } },
-    { "registryType": "npm", "identifier": "nullprint-mcp", "version": "0.1.6", "transport": { "type": "stdio" } }
+    { "registryType": "pypi", "identifier": "nullprint-mcp", "version": "0.1.7", "transport": { "type": "stdio" } },
+    { "registryType": "npm", "identifier": "nullprint-mcp", "version": "0.1.7", "transport": { "type": "stdio" } }
   ]
 }

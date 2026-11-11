@@ -26,8 +26,9 @@ function fakeDaemon(routes) {
         return res.end(JSON.stringify({ detail: "no such route" }));
       }
       const [status, payload] = typeof r === "function" ? r(seen[seen.length - 1]) : r;
-      res.writeHead(status, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(payload));
+      const raw = Buffer.isBuffer(payload); // 0e160:截图是二进制
+      res.writeHead(status, { "Content-Type": raw ? "image/png" : "application/json" });
+      res.end(raw ? payload : JSON.stringify(payload));
     });
   });
   return new Promise((resolve) => srv.listen(0, "127.0.0.1", () => resolve({ srv, port: srv.address().port, seen })));
@@ -91,7 +92,7 @@ test("initialize + tools/list: server name nullprint, exactly the 17 tools, no p
   assert.deepEqual(
     tools.map((t) => t.name),
     ["profiles_list", "profile_start", "profile_stop", "profile_create", "profile_settings", "profile_checkup", "proxy_check", "profile_delete", "trash_list", "profile_restore",
-      "session_goto", "session_snapshot", "session_click_selector", "session_fill_selector", "session_press", "session_eval", "session_tabs", "session_switch_tab", "session_dialog"],
+      "session_goto", "session_snapshot", "session_screenshot", "session_click_selector", "session_fill_selector", "session_press", "session_eval", "session_tabs", "session_switch_tab", "session_dialog"],
   );
   for (const t of tools) assert.ok(t.inputSchema && t.inputSchema.type === "object", t.name);
   assert.ok(!tools.some((t) => /purge|trash_delete|empty/.test(t.name)));
@@ -383,6 +384,147 @@ test("0.2.27: an answer that is not the daemon's format hints at a system proxy"
     assert.equal(r.result.isError, true);
     assert.match(r.result.content[0].text, /503/);
     assert.match(r.result.content[0].text, /system proxy/);
+  } finally {
+    c.close();
+    srv.close();
+  }
+});
+
+// 0e160 / 0e161(xkshi 11-08,录 MCP 演示 GIF 时发现):session_screenshot 回图片(尺寸 / 字节有上限),
+// click / fill_selector 可选 nth(只在给了时才带)。和 Python 那边 tests/test_tools_1108_screenshot_nth.py 同一套。
+function png(w, h, pad = 0) {
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(w, 0);
+  ihdr.writeUInt32BE(h, 4);
+  ihdr[8] = 8;
+  ihdr[9] = 6;
+  const len = Buffer.alloc(4);
+  len.writeUInt32BE(13);
+  return Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), len, Buffer.from("IHDR"), ihdr, Buffer.alloc(4), Buffer.alloc(pad)]);
+}
+const jpeg = (pad = 0) => Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(pad)]);
+const shots = ({ full, viewport, jpg }) => (req) => [200, req.query.format === "jpeg" ? jpg : req.query.full_page === "true" ? full : viewport];
+
+test("0e160 session_screenshot: viewport PNG as an image block plus info", async () => {
+  const shot = png(1280, 720, 100);
+  const { srv, port, seen } = await fakeDaemon({ "GET /sessions/bing-us/screenshot": shots({ viewport: shot }) });
+  const c = new Client([], { NULLPRINT_DAEMON_URL: `http://127.0.0.1:${port}` });
+  try {
+    await c.init();
+    const r = (await c.call("session_screenshot", { name: "bing-us" })).result;
+    assert.ok(!r.isError, JSON.stringify(r));
+    assert.deepEqual(r.content.map((b) => b.type), ["image", "text"]);
+    assert.equal(r.content[0].mimeType, "image/png");
+    assert.ok(Buffer.from(r.content[0].data, "base64").equals(shot));
+    const info = JSON.parse(r.content[1].text);
+    assert.deepEqual([info.format, info.width, info.height, info.full_page, "note" in info], ["png", 1280, 720, false, false]);
+    assert.deepEqual([seen[0].query.full_page, seen[0].query.format, seen[0].query.scale], ["false", "png", "css"]);
+  } finally {
+    c.close();
+    srv.close();
+  }
+});
+
+test("0e160 session_screenshot: too-tall full page falls back to the viewport", async () => {
+  const { srv, port, seen } = await fakeDaemon({ "GET /sessions/bing-us/screenshot": shots({ full: png(1280, 2001, 100), viewport: png(1280, 720, 100) }) });
+  const c = new Client([], { NULLPRINT_DAEMON_URL: `http://127.0.0.1:${port}` });
+  try {
+    await c.init();
+    const r = (await c.call("session_screenshot", { name: "bing-us", full_page: true })).result;
+    const info = JSON.parse(r.content[1].text);
+    assert.deepEqual(seen.map((s) => s.query.full_page), ["true", "false"]);
+    assert.equal(info.full_page, false);
+    assert.equal(info.height, 720);
+    assert.match(info.note, /1280x2001/);
+    assert.ok(seen.every((s) => s.query.scale === "css"));
+    assert.match(info.note, /viewport/);
+  } finally {
+    c.close();
+    srv.close();
+  }
+});
+
+test("0e160 session_screenshot: oversized PNG re-taken as JPEG; still too big = readable error", async () => {
+  const big = png(1280, 1800, 1_000_000);
+  const a = await fakeDaemon({ "GET /sessions/bing-us/screenshot": shots({ full: big, jpg: jpeg(1000) }) });
+  const b = await fakeDaemon({ "GET /sessions/bing-us/screenshot": shots({ full: big, jpg: jpeg(1_000_000) }) });
+  const ca = new Client([], { NULLPRINT_DAEMON_URL: `http://127.0.0.1:${a.port}` });
+  const cb = new Client([], { NULLPRINT_DAEMON_URL: `http://127.0.0.1:${b.port}` });
+  try {
+    await ca.init();
+    await cb.init();
+    const r = (await ca.call("session_screenshot", { name: "bing-us", full_page: true })).result;
+    assert.equal(r.content[0].mimeType, "image/jpeg");
+    const last = a.seen[a.seen.length - 1].query;
+    assert.deepEqual([last.format, last.full_page, last.scale], ["jpeg", "true", "css"]);
+    assert.ok(Number(last.quality) <= 80);
+    const info = JSON.parse(r.content[1].text);
+    assert.deepEqual([info.format, info.width, info.height], ["jpeg", 1280, 1800]);
+    assert.match(info.note, /JPEG/);
+    const e = (await cb.call("session_screenshot", { name: "bing-us", full_page: true })).result;
+    assert.equal(e.isError, true);
+    assert.match(e.content[0].text, /too large/);
+    assert.match(e.content[0].text, /full_page/);
+  } finally {
+    ca.close();
+    cb.close();
+    a.srv.close();
+    b.srv.close();
+  }
+});
+
+test("0e161 click / fill_selector send nth only when given; negative nth refused locally", async () => {
+  const { srv, port, seen } = await fakeDaemon({
+    "POST /sessions/bing-us/click_selector": [200, { ok: true }],
+    "POST /sessions/bing-us/fill_selector": [200, { ok: true }],
+  });
+  const c = new Client([], { NULLPRINT_DAEMON_URL: `http://127.0.0.1:${port}` });
+  try {
+    await c.init();
+    await c.call("session_click_selector", { name: "bing-us", selector: "button.b" });
+    await c.call("session_click_selector", { name: "bing-us", selector: "button.b", nth: 1 });
+    await c.call("session_fill_selector", { name: "bing-us", selector: "input[name=search]", text: "x" });
+    await c.call("session_fill_selector", { name: "bing-us", selector: "input[name=search]", text: "x", nth: 0 });
+    assert.deepEqual(seen.map((s) => s.body.nth), [undefined, 1, undefined, 0]);
+    const bad = (await c.call("session_fill_selector", { name: "bing-us", selector: "input", text: "x", nth: -1 })).result;
+    assert.equal(bad.isError, true);
+    assert.equal(seen.length, 4);
+  } finally {
+    c.close();
+    srv.close();
+  }
+});
+
+test("0e160 session_screenshot: viewport over 2000 px is a readable error (huge window / older app on high-DPI)", async () => {
+  const { srv, port } = await fakeDaemon({ "GET /sessions/bing-us/screenshot": shots({ viewport: png(2880, 1800, 100), full: png(2880, 9000, 100) }) });
+  const c = new Client([], { NULLPRINT_DAEMON_URL: `http://127.0.0.1:${port}` });
+  try {
+    await c.init();
+    for (const full_page of [false, true]) {
+      const r = (await c.call("session_screenshot", { name: "bing-us", full_page })).result;
+      assert.equal(r.isError, true);
+      for (const re of [/2880x1800/, /2000/, /smaller/, /0\.2\.31/]) assert.match(r.content[0].text, re);
+    }
+  } finally {
+    c.close();
+    srv.close();
+  }
+});
+
+test("0e161 the daemon's selector errors reach the agent (matched N / matched only N)", async () => {
+  const many = "selector 'b' matched 2 elements; make it more specific, or pass nth (0-based) to pick one of them";
+  const short = "selector 'b' matched only 2 elements; nth=5 is out of range (0-based, use 0 to 1)";
+  const { srv, port } = await fakeDaemon({
+    "POST /sessions/bing-us/click_selector": (req) => [502, { detail: "SelectorMatchError: " + (req.body.nth === undefined ? many : short) }],
+  });
+  const c = new Client([], { NULLPRINT_DAEMON_URL: `http://127.0.0.1:${port}` });
+  try {
+    await c.init();
+    const a = (await c.call("session_click_selector", { name: "bing-us", selector: "b" })).result;
+    const b = (await c.call("session_click_selector", { name: "bing-us", selector: "b", nth: 5 })).result;
+    assert.equal(a.isError, true);
+    assert.ok(a.content[0].text.includes(many) && a.content[0].text.includes("502"), a.content[0].text);
+    assert.ok(b.content[0].text.includes(short), b.content[0].text);
   } finally {
     c.close();
     srv.close();

@@ -3,6 +3,26 @@
 Both builds of nullprint-mcp (Python on PyPI, Node on npm) ship the same tools and the
 same version number.
 
+## 0.1.7 — unreleased
+
+Needs Nullprint 0.2.31 or later. `session_screenshot` also runs on 0.2.18–0.2.30, but those versions shoot at
+screen pixels, so on a high-DPI display a normal window goes over the size limit (the error says to update the
+app to 0.2.31 or make the window smaller). Older versions ignore `nth`, so a selector that matches several
+elements still fails.
+
+- **New tool `session_screenshot`.** Returns the session's current page as an image (PNG; `full_page` for the
+  whole scrollable page) plus `{format, width, height, full_page, bytes, note?}`. Size is capped before it
+  reaches the agent: taken in CSS pixels, at most 2000 px on the longest side (the per-image limit the Claude
+  API applies once a conversation carries many images). A bigger full page falls back to the viewport, a
+  bigger viewport is an error asking for a smaller window, and a PNG over 1 MB is re-taken as JPEG; the note
+  says which. Nothing is written to disk.
+- **`session_click_selector` / `session_fill_selector` take an optional `nth`** (0-based) to pick one element
+  when the selector matches several. Without it the selector must match exactly one; the error now says how
+  many matched instead of Playwright's "strict mode violation" text, and an `nth` past the last match fails at
+  once with "matched only N elements" instead of waiting for a timeout.
+- README: a section on giving the agent only the Nullprint tools — an agent that may run commands or read
+  files can read `~/.nullprint/daemon.json` and call the daemon directly.
+
 ## 0.1.6 — 2026-11-07
 
 Needs Nullprint 0.2.27 or later for phone identities; everything else works with 0.2.18.

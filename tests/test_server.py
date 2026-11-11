@@ -115,7 +115,7 @@ def test_server_exposes_every_tool_with_a_description():
     assert set(by_name) == {"profiles_list", "profile_start", "profile_stop",
                             "profile_create", "profile_settings", "profile_checkup", "proxy_check",
                             "profile_delete", "trash_list", "profile_restore",
-                            "session_goto", "session_snapshot", "session_click_selector",
+                            "session_goto", "session_snapshot", "session_screenshot", "session_click_selector",
                             "session_fill_selector", "session_press", "session_eval",
                             "session_tabs", "session_switch_tab", "session_dialog"}
     for tool in by_name.values():

@@ -6,7 +6,11 @@ argument checking and a readable error.
 """
 from __future__ import annotations
 
+import json
+import struct
 from urllib.parse import quote
+
+from mcp.server.fastmcp import Image
 
 from . import daemon
 from .daemon import DaemonError
@@ -389,7 +393,95 @@ def session_snapshot(name: str) -> dict:
     return daemon.request("GET", f"/sessions/{_seg(clean)}/snapshot").json()
 
 
-def session_click_selector(name: str, selector: str) -> dict:
+def _nth(nth) -> dict:
+    """0e161: send nth only when given (older daemons ignore it; leaving it out = strict mode)."""
+    if nth is None:
+        return {}
+    if isinstance(nth, bool) or not isinstance(nth, int) or nth < 0:
+        raise ValueError(f"nth must be a whole number from 0 (the first match), got {nth!r}")
+    return {"nth": nth}
+
+
+# 0e160: what a screenshot may cost the agent. Once a request carries many images the Claude API caps each
+# at 2000 px a side and rejects the whole turn over it; a multi-megabyte image is mostly wasted context anyway.
+# Shots are taken at CSS pixels (scale=css, Nullprint 0.2.31+) so a high-DPI window is not doubled; older apps ignore scale.
+SCREENSHOT_MAX_SIDE = 2000
+SCREENSHOT_MAX_BYTES = 1_000_000
+SCREENSHOT_JPEG_QUALITY = 70
+
+
+def _png_size(data: bytes) -> tuple[int, int]:
+    if len(data) < 24 or data[:8] != b"\x89PNG\r\n\x1a\n" or data[12:16] != b"IHDR":
+        raise DaemonError("the daemon's screenshot is not a PNG image")
+    return struct.unpack(">II", data[16:24])
+
+
+def _shot(clean: str, full_page: bool, fmt: str = "png") -> bytes:
+    params = {"full_page": "true" if full_page else "false", "format": fmt, "scale": "css"}
+    if fmt == "jpeg":
+        params["quality"] = SCREENSHOT_JPEG_QUALITY
+    return daemon.request("GET", f"/sessions/{_seg(clean)}/screenshot", params=params).content
+
+
+def session_screenshot(name: str, full_page: bool = False) -> list:
+    """Take a screenshot of the session's current page and return it as an image.
+
+    Use it when you need to SEE the page (layout, images, a captcha, whether
+    something rendered); session_snapshot is cheaper for reading text and
+    finding selectors. Requires a session opened with profile_start first.
+    The image comes back inline — nothing is written to disk.
+
+    Size is capped so it does not flood your context: at most 2000 px on the
+    longest side, in CSS pixels. A full page bigger than that falls back to the
+    visible viewport (scroll with session_eval, e.g.
+    "window.scrollBy(0, innerHeight)", and take another); a PNG over 1 MB is
+    re-taken as JPEG. What happened is said in the returned info.
+
+    Args:
+        name: identity name, exactly as profiles_list reports it.
+        full_page: true for the whole scrollable page, false (default) for
+            what is visible in the window.
+
+    Returns the image, then {format, width, height, full_page, bytes, note?}.
+    Fails with a readable message if the session is not open (409 — call
+    profile_start first), the identity does not exist (404), or the visible
+    window itself is over 2000 px (needs Nullprint 0.2.31+ on high-DPI
+    displays; otherwise make the window smaller).
+    """
+    clean = _identity_name(name)
+    data = _shot(clean, full_page)
+    w, h = _png_size(data)
+    notes = []
+    if full_page and max(w, h) > SCREENSHOT_MAX_SIDE:
+        notes.append(f"the full page is {w}x{h} px, over the {SCREENSHOT_MAX_SIDE} px limit; "
+                     "returned the visible viewport instead — scroll and take another for the rest")
+        full_page = False
+        data = _shot(clean, False)
+        w, h = _png_size(data)
+    if max(w, h) > SCREENSHOT_MAX_SIDE:
+        raise ValueError(
+            f"the screenshot is {w}x{h} px, over the {SCREENSHOT_MAX_SIDE} px limit. Update the Nullprint app to "
+            "0.2.31 or later (older versions shoot at screen pixels on high-DPI displays, doubling the size), "
+            "or make the browser window smaller, then try again")
+    fmt = "png"
+    if len(data) > SCREENSHOT_MAX_BYTES:
+        png_bytes = len(data)
+        data = _shot(clean, full_page, "jpeg")
+        fmt = "jpeg"
+        if len(data) > SCREENSHOT_MAX_BYTES:
+            raise ValueError(
+                f"the screenshot is too large ({len(data) // 1024} KB even as JPEG, limit "
+                f"{SCREENSHOT_MAX_BYTES // 1024} KB)"
+                + ("; take it with full_page=false, then scroll for the rest" if full_page else ""))
+        notes.append(f"PNG was {png_bytes // 1024} KB, over the {SCREENSHOT_MAX_BYTES // 1024} KB "
+                     f"limit; re-taken as JPEG (quality {SCREENSHOT_JPEG_QUALITY})")
+    info = {"format": fmt, "width": w, "height": h, "full_page": full_page, "bytes": len(data)}
+    if notes:
+        info["note"] = "; ".join(notes)
+    return [Image(data=data, format=fmt), json.dumps(info)]
+
+
+def session_click_selector(name: str, selector: str, nth: int | None = None) -> dict:
     """Click an element on the session's current page, located by a CSS selector.
 
     Requires a session opened with profile_start first. `selector` is a CSS
@@ -399,20 +491,26 @@ def session_click_selector(name: str, selector: str) -> dict:
     Args:
         name: identity name, exactly as profiles_list reports it.
         selector: CSS selector for the element to click.
+        nth: optional, 0-based — which element to use when the selector matches
+            several. Leave it out and a selector that matches several elements
+            fails with "matched N elements"; then write a more specific selector
+            or pass nth.
 
     Returns {ok: true}. Fails with a readable message if the session is not
     open (409 — call profile_start first), the identity does not exist (404),
-    or the selector never matches / the click times out (502).
+    the selector matches several elements and no nth was given, or the
+    selector never matches / the click times out (502).
     """
     clean = _identity_name(name)
     if not isinstance(selector, str) or not selector.strip():
         raise ValueError("selector is required: a CSS selector, e.g. 'button#submit'")
+    body = {"selector": selector.strip(), **_nth(nth)}
     return daemon.request(
-        "POST", f"/sessions/{_seg(clean)}/click_selector", json={"selector": selector.strip()}
+        "POST", f"/sessions/{_seg(clean)}/click_selector", json=body
     ).json()
 
 
-def session_fill_selector(name: str, selector: str, text: str) -> dict:
+def session_fill_selector(name: str, selector: str, text: str, nth: int | None = None) -> dict:
     """Fill a text field on the session's current page, located by a CSS selector.
 
     Uses Playwright's fill(), which drives React/Vue-controlled inputs correctly
@@ -423,17 +521,20 @@ def session_fill_selector(name: str, selector: str, text: str) -> dict:
         name: identity name, exactly as profiles_list reports it.
         selector: CSS selector for the input to fill.
         text: the text to put in the field, replacing whatever was there.
+        nth: optional, 0-based — which element to use when the selector matches
+            several (see session_click_selector).
 
     Returns {ok: true}. Fails with a readable message if the session is not
     open (409 — call profile_start first), the identity does not exist (404),
-    or the selector never matches / the fill times out (502).
+    the selector matches several elements and no nth was given, or the
+    selector never matches / the fill times out (502).
     """
     clean = _identity_name(name)
     if not isinstance(selector, str) or not selector.strip():
         raise ValueError("selector is required: a CSS selector, e.g. 'input[name=email]'")
     return daemon.request(
         "POST", f"/sessions/{_seg(clean)}/fill_selector",
-        json={"selector": selector.strip(), "value": text},
+        json={"selector": selector.strip(), "value": text, **_nth(nth)},
     ).json()
 
 
@@ -555,6 +656,6 @@ def session_dialog(name: str, action: str, prompt_text: str | None = None) -> di
 TOOLS = (profiles_list, profile_start, profile_stop,
          profile_create, profile_settings, profile_checkup, proxy_check,
          profile_delete, trash_list, profile_restore,
-         session_goto, session_snapshot, session_click_selector,
+         session_goto, session_snapshot, session_screenshot, session_click_selector,
          session_fill_selector, session_press, session_eval,
          session_tabs, session_switch_tab, session_dialog)

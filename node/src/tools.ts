@@ -1,7 +1,7 @@
-// The 17 tools, one per daemon endpoint. Names, arguments, descriptions and behaviour mirror
+// The 20 tools, one per daemon endpoint. Names, arguments, descriptions and behaviour mirror
 // mcp/nullprint_mcp/tools.py exactly so an agent sees the same server whichever build it runs.
 import { z } from "zod";
-import { DaemonError, request } from "./daemon.js";
+import { DaemonError, request, requestBytes } from "./daemon.js";
 
 const CDP_KEYS = ["cdp_endpoint", "ws_endpoint", "cdp_url", "webSocketDebuggerUrl"] as const;
 const NO_CDP_NOTE =
@@ -38,6 +38,82 @@ function nonEmpty(v: unknown, msg: string): string {
 }
 
 const NAME = z.string().describe("identity name, exactly as profiles_list reports it");
+
+/** 0e161: send nth only when given (older daemons ignore it; leaving it out = strict mode). */
+function nthArg(nth: unknown): { nth?: number } {
+  if (nth === undefined || nth === null) return {};
+  if (typeof nth !== "number" || !Number.isInteger(nth) || nth < 0) throw new Error(`nth must be a whole number from 0 (the first match), got ${JSON.stringify(nth)}`);
+  return { nth };
+}
+const NTH = z
+  .number()
+  .int()
+  .optional()
+  .describe(
+    'optional, 0-based: which element to use when the selector matches several. Leave it out and a selector that matches several elements fails with "matched N elements"; then write a more specific selector or pass nth',
+  );
+
+/** 0e160: a tool result that is not JSON (the screenshot: an image block plus its info). */
+export class ToolContent {
+  constructor(public content: ({ type: "image"; data: string; mimeType: string } | { type: "text"; text: string })[]) {}
+}
+
+// 0e160: what a screenshot may cost the agent. Once a request carries many images the Claude API caps each
+// at 2000 px a side and rejects the whole turn over it; a multi-megabyte image is mostly wasted context anyway.
+// Shots are taken at CSS pixels (scale=css, Nullprint 0.2.31+) so a high-DPI window is not doubled; older apps ignore scale.
+export const SCREENSHOT_MAX_SIDE = 2000;
+export const SCREENSHOT_MAX_BYTES = 1_000_000;
+const SCREENSHOT_JPEG_QUALITY = 70;
+const PNG_SIG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+function pngSize(data: Buffer): [number, number] {
+  if (data.length < 24 || !data.subarray(0, 8).equals(PNG_SIG) || data.subarray(12, 16).toString("latin1") !== "IHDR")
+    throw new DaemonError("the daemon's screenshot is not a PNG image");
+  return [data.readUInt32BE(16), data.readUInt32BE(20)];
+}
+
+function shot(clean: string, fullPage: boolean, fmt: "png" | "jpeg" = "png"): Promise<Buffer> {
+  const params: Record<string, string | number> = { full_page: fullPage ? "true" : "false", format: fmt, scale: "css" };
+  if (fmt === "jpeg") params.quality = SCREENSHOT_JPEG_QUALITY;
+  return requestBytes("GET", `/sessions/${encodeURIComponent(clean)}/screenshot`, { params });
+}
+
+async function screenshot(name: unknown, fullPageArg: unknown): Promise<ToolContent> {
+  const clean = identityName(name);
+  let fullPage = Boolean(fullPageArg);
+  let data = await shot(clean, fullPage);
+  let [w, h] = pngSize(data);
+  const notes: string[] = [];
+  if (fullPage && Math.max(w, h) > SCREENSHOT_MAX_SIDE) {
+    notes.push(`the full page is ${w}x${h} px, over the ${SCREENSHOT_MAX_SIDE} px limit; returned the visible viewport instead — scroll and take another for the rest`);
+    fullPage = false;
+    data = await shot(clean, false);
+    [w, h] = pngSize(data);
+  }
+  if (Math.max(w, h) > SCREENSHOT_MAX_SIDE)
+    throw new Error(
+      `the screenshot is ${w}x${h} px, over the ${SCREENSHOT_MAX_SIDE} px limit. Update the Nullprint app to 0.2.31 or later ` +
+        "(older versions shoot at screen pixels on high-DPI displays, doubling the size), or make the browser window smaller, then try again",
+    );
+  let fmt: "png" | "jpeg" = "png";
+  if (data.length > SCREENSHOT_MAX_BYTES) {
+    const pngBytes = data.length;
+    data = await shot(clean, fullPage, "jpeg");
+    fmt = "jpeg";
+    if (data.length > SCREENSHOT_MAX_BYTES)
+      throw new Error(
+        `the screenshot is too large (${Math.floor(data.length / 1024)} KB even as JPEG, limit ${Math.floor(SCREENSHOT_MAX_BYTES / 1024)} KB)` +
+          (fullPage ? "; take it with full_page=false, then scroll for the rest" : ""),
+      );
+    notes.push(`PNG was ${Math.floor(pngBytes / 1024)} KB, over the ${Math.floor(SCREENSHOT_MAX_BYTES / 1024)} KB limit; re-taken as JPEG (quality ${SCREENSHOT_JPEG_QUALITY})`);
+  }
+  const info: Record<string, unknown> = { format: fmt, width: w, height: h, full_page: fullPage, bytes: data.length };
+  if (notes.length) info.note = notes.join("; ");
+  return new ToolContent([
+    { type: "image", data: data.toString("base64"), mimeType: `image/${fmt}` },
+    { type: "text", text: JSON.stringify(info) },
+  ]);
+}
 
 export interface ToolDef {
   name: string;
@@ -240,16 +316,31 @@ Returns {snapshot}: the page's accessibility tree as text. Fails with a readable
     handler: (a) => request("GET", `/sessions/${encodeURIComponent(identityName(a.name))}/snapshot`),
   },
   {
+    name: "session_screenshot",
+    description: `Take a screenshot of the session's current page and return it as an image.
+
+Use it when you need to SEE the page (layout, images, a captcha, whether something rendered); session_snapshot is cheaper for reading text and finding selectors. Requires a session opened with profile_start first. The image comes back inline — nothing is written to disk.
+
+Size is capped so it does not flood your context: at most 2000 px on the longest side, in CSS pixels. A full page bigger than that falls back to the visible viewport (scroll with session_eval, e.g. "window.scrollBy(0, innerHeight)", and take another); a PNG over 1 MB is re-taken as JPEG. What happened is said in the returned info.
+
+Returns the image, then {format, width, height, full_page, bytes, note?}. Fails with a readable message if the session is not open (409 — call profile_start first), the identity does not exist (404), or the visible window itself is over 2000 px (needs Nullprint 0.2.31+ on high-DPI displays; otherwise make the window smaller).`,
+    shape: {
+      name: NAME,
+      full_page: z.boolean().optional().describe("true for the whole scrollable page, false (default) for what is visible in the window"),
+    },
+    handler: (a) => screenshot(a.name, a.full_page),
+  },
+  {
     name: "session_click_selector",
     description: `Click an element on the session's current page, located by a CSS selector.
 
 Requires a session opened with profile_start first. \`selector\` is a CSS selector (e.g. "button#submit", "a.nav-link") — not an XPath, not a role/name pair (use session_snapshot to find one).
 
-Returns {ok: true}. Fails with a readable message if the session is not open (409 — call profile_start first), the identity does not exist (404), or the selector never matches / the click times out (502).`,
-    shape: { name: NAME, selector: z.string().describe("CSS selector for the element to click") },
+Returns {ok: true}. Fails with a readable message if the session is not open (409 — call profile_start first), the identity does not exist (404), the selector matches several elements and no nth was given, or the selector never matches / the click times out (502).`,
+    shape: { name: NAME, selector: z.string().describe("CSS selector for the element to click"), nth: NTH },
     handler: (a) =>
       request("POST", `/sessions/${encodeURIComponent(identityName(a.name))}/click_selector`, {
-        json: { selector: nonEmpty(a.selector, "selector is required: a CSS selector, e.g. 'button#submit'") },
+        json: { selector: nonEmpty(a.selector, "selector is required: a CSS selector, e.g. 'button#submit'"), ...nthArg(a.nth) },
       }),
   },
   {
@@ -258,15 +349,16 @@ Returns {ok: true}. Fails with a readable message if the session is not open (40
 
 Uses Playwright's fill(), which drives React/Vue-controlled inputs correctly (setting the DOM value directly does not). Requires a session opened with profile_start first. \`selector\` is a CSS selector, not an XPath.
 
-Returns {ok: true}. Fails with a readable message if the session is not open (409 — call profile_start first), the identity does not exist (404), or the selector never matches / the fill times out (502).`,
+Returns {ok: true}. Fails with a readable message if the session is not open (409 — call profile_start first), the identity does not exist (404), the selector matches several elements and no nth was given, or the selector never matches / the fill times out (502).`,
     shape: {
       name: NAME,
       selector: z.string().describe("CSS selector for the input to fill"),
       text: z.string().describe("the text to put in the field, replacing whatever was there"),
+      nth: NTH,
     },
     handler: (a) =>
       request("POST", `/sessions/${encodeURIComponent(identityName(a.name))}/fill_selector`, {
-        json: { selector: nonEmpty(a.selector, "selector is required: a CSS selector, e.g. 'input[name=email]'"), value: a.text },
+        json: { selector: nonEmpty(a.selector, "selector is required: a CSS selector, e.g. 'input[name=email]'"), value: a.text, ...nthArg(a.nth) },
       }),
   },
   {

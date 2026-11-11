@@ -92,17 +92,20 @@ function isLoopback(url: string): boolean {
  * NODE_USE_ENV_PROXY=1 时 fetch 和 http 的默认 agent 都按 HTTP(S)_PROXY 走代理,代理没把回环地址列进例外就会回空 503
  * (0.2.27,员工机)。回环地址用自己新建的 http.Agent(不读代理环境);别的地址照旧用 fetch。
  */
-async function call(url: string, init: { method?: string; headers?: Record<string, string>; body?: string; timeoutMs: number }): Promise<{ status: number; text: string }> {
+async function call(url: string, init: { method?: string; headers?: Record<string, string>; body?: string; timeoutMs: number }): Promise<{ status: number; text: string; bytes: Buffer }> {
   if (!(url.startsWith("http:") && isLoopback(url))) {
     const resp = await fetch(url, { method: init.method, headers: init.headers, body: init.body, signal: AbortSignal.timeout(init.timeoutMs) });
-    return { status: resp.status, text: await resp.text() };
+    const bytes = Buffer.from(await resp.arrayBuffer());
+    return { status: resp.status, text: bytes.toString("utf8"), bytes };
   }
   return new Promise((resolve, reject) => {
     const req = http.request(url, { method: init.method || "GET", headers: init.headers, agent: new http.Agent() }, (res) => {
-      let text = "";
-      res.setEncoding("utf8");
-      res.on("data", (c) => (text += c));
-      res.on("end", () => resolve({ status: res.statusCode || 0, text }));
+      const chunks: Buffer[] = []; // 0e160:截图是二进制,先收字节再按需转文字
+      res.on("data", (c: Buffer) => chunks.push(c));
+      res.on("end", () => {
+        const bytes = Buffer.concat(chunks);
+        resolve({ status: res.statusCode || 0, text: bytes.toString("utf8"), bytes });
+      });
       res.on("error", reject);
     });
     req.setTimeout(init.timeoutMs, () => req.destroy(Object.assign(new Error("timed out"), { name: "AbortError" })));
@@ -211,6 +214,21 @@ export interface RequestOptions {
 
 /** Call the daemon. Throws DaemonError with a readable message on any failure; returns the parsed JSON body (or null). */
 export async function request(method: string, pathname: string, opts: RequestOptions = {}): Promise<unknown> {
+  const text = (await send(method, pathname, opts)).toString("utf8");
+  if (!text.trim()) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+}
+
+/** Same as request, but returns the raw body (0e160: screenshots). */
+export async function requestBytes(method: string, pathname: string, opts: RequestOptions = {}): Promise<Buffer> {
+  return send(method, pathname, opts);
+}
+
+async function send(method: string, pathname: string, opts: RequestOptions): Promise<Buffer> {
   const [url, discovered] = resolve();
   const headers: Record<string, string> = { Accept: "application/json" };
   const k = apiKey();
@@ -227,7 +245,7 @@ export async function request(method: string, pathname: string, opts: RequestOpt
     headers["Content-Type"] = "application/json";
     body = JSON.stringify(opts.json);
   }
-  let resp: { status: number; text: string };
+  let resp: { status: number; text: string; bytes: Buffer };
   try {
     resp = await call(target, { method, headers, body, timeoutMs: TIMEOUT_MS });
   } catch (e) {
@@ -239,14 +257,7 @@ export async function request(method: string, pathname: string, opts: RequestOpt
     );
   }
   const text = resp.text;
-  if (resp.status >= 200 && resp.status < 300) {
-    if (!text.trim()) return null;
-    try {
-      return JSON.parse(text);
-    } catch {
-      return text;
-    }
-  }
+  if (resp.status >= 200 && resp.status < 300) return resp.bytes;
   let hint = STATUS_HINT[resp.status] || "the daemon refused the request";
   try {
     JSON.parse(text);
